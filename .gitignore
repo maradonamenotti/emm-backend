@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.sqlite
+.cache/
+.wwebjs_cache/
+sessions/
+npm-cache/
+*.log
