@@ -16,6 +16,8 @@ export class WhatsAppController {
 
     @Post('webhook')
     async webhook(@Body() body: any) {
+        console.log('=== WEBHOOK RECEIVED ===');
+        console.log(JSON.stringify(body, null, 2));
         await this.whatsAppService.processWebhook(body);
         return { success: true };
     }
