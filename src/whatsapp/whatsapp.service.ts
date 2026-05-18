@@ -177,7 +177,7 @@ export class WhatsAppService {
                   AND um.direccion = 'entrante'
                   AND (p.whatsapp_ultimo_leido_at IS NULL OR um.fecha_envio > p.whatsapp_ultimo_leido_at)
             ) u ON true
-            WHERE p.telefono IS NOT NULL AND p.origen = $1
+            WHERE p.telefono IS NOT NULL AND (p.origen = $1 OR m.id_mensaje IS NOT NULL)
             ORDER BY (COALESCE(u.no_leidos, 0) > 0) DESC, COALESCE(m.fecha_envio, p.fecha_ingreso) DESC NULLS LAST, p.fecha_ingreso DESC
             LIMIT $2 OFFSET $3
         `, ['WhatsApp', limit + 1, offset]);
