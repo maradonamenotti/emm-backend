@@ -193,9 +193,9 @@ export class WhatsAppService {
                 fecha_ingreso: row.fecha_ingreso, notas_generales: row.notas_generales,
             });
 
-            const lastMessage = row.ultimo_mensaje ? this.mensajeRepo.create({
+            const lastMessage: MensajeWhatsApp | null = row.ultimo_mensaje ? (this.mensajeRepo.create({
                 ...row.ultimo_mensaje, fecha_envio: new Date(row.ultimo_mensaje.fecha_envio)
-            }) : null;
+            }) as any as MensajeWhatsApp) : null;
 
             return this.serializeConversation(prospecto, lastMessage, Number(row.no_leidos || 0));
         }));
