@@ -1,12 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { LessThan, Repository } from 'typeorm';
 import { Prospecto } from '../entities/Prospecto';
 import { MensajeWhatsApp, WhatsAppEstadoLectura } from '../entities/MensajeWhatsApp';
 import { EstadoEmbudo } from '../entities/EstadoEmbudo';
 import { WhatsAppGateway } from './whatsapp.gateway';
-import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
 
 export interface SerializedMessage {
     id_mensaje: string;
@@ -29,13 +27,7 @@ interface MessageQueryOptions {
 }
 
 @Injectable()
-export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
-    private client: any;
-    private isReady = false;
-    private isInitializing = false;
-    private reconnectAttempts = 0;
-    private reconnectTimer?: ReturnType<typeof setTimeout>;
-
+export class WhatsAppService {
     constructor(
         @InjectRepository(Prospecto, 'crm')
         private readonly prospectoRepo: Repository<Prospecto>,
@@ -45,234 +37,6 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
         private readonly estadoEmbudoRepo: Repository<EstadoEmbudo>,
         private readonly gateway: WhatsAppGateway,
     ) {}
-
-    onModuleInit() {
-        void this.initializeClient();
-    }
-
-    async onModuleDestroy() {
-        this.clearReconnectTimer();
-        await this.destroyClient();
-    }
-
-    private createClient(): any {
-        return new Client({
-            authStrategy: new LocalAuth({
-                dataPath: './sessions'
-            }),
-            puppeteer: {
-                headless: true,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu'
-                ],
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-            }
-        });
-    }
-
-    private clearReconnectTimer() {
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = undefined;
-        }
-    }
-
-    private async destroyClient() {
-        const client = this.client;
-        this.client = undefined;
-        if (!client) return;
-
-        client.removeAllListeners();
-        try {
-            await client.destroy();
-        } catch (err) {
-            console.error('Error destroying WhatsApp client:', err);
-        }
-    }
-
-    private scheduleReconnect(reason?: unknown) {
-        if (this.reconnectTimer) return;
-
-        this.isReady = false;
-        const delayMs = Math.min(30000, 2000 * (this.reconnectAttempts + 1));
-        this.reconnectAttempts += 1;
-        console.log(`Scheduling WhatsApp reconnect in ${delayMs}ms`, reason || '');
-
-        this.reconnectTimer = setTimeout(() => {
-            this.reconnectTimer = undefined;
-            if (this.isInitializing) {
-                this.scheduleReconnect(reason);
-                return;
-            }
-            void this.initializeClient();
-        }, delayMs);
-    }
-
-    private registerClientHandlers(client: any) {
-        client.on('qr', (qr: string) => {
-            console.log('QR RECEIVED');
-            this.gateway.emit('whatsapp:qr', qr);
-        });
-
-        client.on('ready', () => {
-            console.log('WhatsApp Web Client is ready!');
-            this.isReady = true;
-            this.reconnectAttempts = 0;
-            this.gateway.emit('whatsapp:status', { status: 'ready' });
-        });
-
-        client.on('message', async (msg: any) => {
-            if (msg.from === 'status@broadcast') return;
-            
-            // --- MENSAJE ENTRANTE CRUDO ---
-            console.log('--- MENSAJE ENTRANTE CRUDO ---');
-            console.log('From:', msg.from);
-            console.log('Author:', msg.author);
-            console.log('_data:', JSON.stringify(msg._data, null, 2));
-            console.log('------------------------------');
-
-            // --- DEBUG LOGS PARA EL EXPERTO ---
-            console.log('--- NUEVO MENSAJE RECIBIDO ---');
-            console.log('FROM (msg.from):', msg.from);
-            console.log('AUTHOR (msg.author):', msg.author); // Importante en grupos/empresa
-            console.log('BODY:', msg.body);
-            
-            const contact = await msg.getContact();
-            console.log('CONTACT INFO:', {
-                number: contact.number,
-                pushname: contact.pushname,
-                name: contact.name,
-                id: contact.id?._serialized
-            });
-            // ----------------------------------
-
-            const jid = msg.from; // ej: 54911... @c.us o 263088... @lid
-            const contactId = contact.id?.user || jid.split('@')[0];
-            const realNumber = contact.number || contactId;
-            
-            console.log(`Buscando prospecto para: JID=${jid}, Number=${realNumber}`);
-
-            // Buscamos si ya existe por JID o por número
-            let prospecto = await this.prospectoRepo.findOne({ 
-                where: [
-                    { whatsapp_id: jid },
-                    { telefono: realNumber }
-                ] 
-            });
-            
-            if (!prospecto) {
-                console.log('Prospecto no encontrado, creando uno nuevo...');
-                prospecto = await this.getOrCreateProspecto(realNumber, contact.pushname || contact.name, jid);
-            } else {
-                let changed = false;
-                if (!prospecto.whatsapp_id) {
-                    prospecto.whatsapp_id = jid;
-                    changed = true;
-                }
-                // Si el teléfono guardado es muy largo (probablemente un LID) y tenemos uno más corto/limpio, lo actualizamos
-                if (realNumber && (prospecto.telefono !== realNumber || (prospecto.telefono?.length || 0) > 15)) {
-                    console.log(`Actualizando teléfono de ${prospecto.telefono} a ${realNumber}`);
-                    prospecto.telefono = realNumber;
-                    changed = true;
-                }
-                if (changed) {
-                    await this.prospectoRepo.save(prospecto);
-                    console.log('Prospecto actualizado y guardado.');
-                }
-            }
-            
-            const message = this.mensajeRepo.create({
-                id_mensaje: msg.id.id,
-                prospecto,
-                id_prospecto: prospecto.id,
-                direccion: 'entrante',
-                cuerpo_mensaje: msg.body || '[Mensaje no textual]',
-                fecha_envio: new Date(),
-                estado_lectura: 'Entregado',
-            });
-
-            await this.mensajeRepo.upsert(message, ['id_mensaje']);
-            
-            // Actualizar fecha de último mensaje del cliente
-            prospecto.fecha_ultimo_mensaje_cliente = new Date();
-            await this.prospectoRepo.save(prospecto);
-            
-            // --- AUTO-PARSING DE FORMULARIO WEB ---
-            if (msg.body && msg.body.includes('Nombre:') && msg.body.includes('Email:')) {
-                await this.parsePrefilledMessage(prospecto, msg.body);
-            }
-            
-            const payload = {
-                prospecto: await this.serializeConversation(prospecto),
-                mensaje: this.serializeMessage(message),
-            };
-            this.gateway.emit('whatsapp:message', payload);
-        });
-
-        client.on('message_ack', async (msg: any, ack: number) => {
-            // ack: 1 = Enviado, 2 = Entregado, 3 = Leido, 4 = Reproducido (audio)
-            const estadoMap: Record<number, WhatsAppEstadoLectura> = {
-                1: 'Enviado',
-                2: 'Entregado',
-                3: 'Leido',
-                4: 'Leido',
-            };
-            
-            const nuevoEstado = estadoMap[ack];
-            if (nuevoEstado) {
-                await this.mensajeRepo.update({ id_mensaje: msg.id.id }, { estado_lectura: nuevoEstado });
-                
-                // Avisamos al frontend para que cambie los tildes en tiempo real
-                this.gateway.emit('whatsapp:status', { 
-                    id_mensaje: msg.id.id, 
-                    estado_lectura: nuevoEstado 
-                });
-            }
-        });
-
-        client.on('auth_failure', (message: string) => {
-            if (this.client !== client) return;
-
-            console.error('WhatsApp authentication failed:', message);
-            this.isReady = false;
-            this.gateway.emit('whatsapp:status', { status: 'auth_failure', message });
-            this.scheduleReconnect(message);
-        });
-
-        client.on('disconnected', (reason: string) => {
-            if (this.client !== client) return;
-
-            console.log('WhatsApp Web Client was logged out', reason);
-            this.isReady = false;
-            this.gateway.emit('whatsapp:status', { status: 'disconnected', reason });
-            this.scheduleReconnect(reason);
-        });
-    }
-
-    private async initializeClient() {
-        if (this.isInitializing) return;
-
-        this.isInitializing = true;
-        this.clearReconnectTimer();
-        try {
-            await this.destroyClient();
-            const client = this.createClient();
-            this.client = client;
-            this.registerClientHandlers(client);
-            await client.initialize();
-        } catch (err: any) {
-            console.error('Error initializing WhatsApp client:', err);
-            this.scheduleReconnect(err?.message || err);
-        } finally {
-            this.isInitializing = false;
-        }
-    }
 
     private parseLimit(value: unknown, fallback = 60, max = 200) {
         const parsed = Number(value);
@@ -290,10 +54,6 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
         if (!value) return null;
         const date = new Date(value);
         return Number.isNaN(date.getTime()) ? null : date;
-    }
-
-    private shouldResolveContact(value: unknown) {
-        return value === true || value === 'true' || value === '1';
     }
 
     private normalizeTags(value: unknown) {
@@ -364,37 +124,7 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
         };
     }
 
-    private async parsePrefilledMessage(prospecto: Prospecto, body: string) {
-        console.log('Detectado mensaje de formulario web. Analizando datos...');
-        try {
-            const extract = (key: string) => {
-                const regex = new RegExp(`${key}:?\\s*([^|\\n]+)`, 'i');
-                const match = body.match(regex);
-                return match ? match[1].trim() : null;
-            };
-
-            const nombre = extract('Nombre');
-            const apellido = extract('Apellido');
-            const email = extract('Email');
-            const curso = extract('Curso');
-
-            let changed = false;
-            if (nombre) { prospecto.nombre = nombre.toUpperCase(); changed = true; }
-            if (apellido) { prospecto.apellido = apellido.toUpperCase(); changed = true; }
-            if (email) { prospecto.email = email.toLowerCase(); changed = true; }
-            if (curso) { prospecto.curso_interes = curso; changed = true; }
-
-            if (changed) {
-                await this.prospectoRepo.save(prospecto);
-                console.log(`Datos de formulario auto-completados para: ${prospecto.nombre} ${prospecto.apellido}`);
-            }
-        } catch (err) {
-            console.error('Error al parsear mensaje predefinido:', err);
-        }
-    }
-
     async getOrCreateProspecto(telefono: string, displayName?: string, jid?: string) {
-        // Buscamos primero por whatsapp_id si lo tenemos, luego por telefono
         let existing = jid ? await this.prospectoRepo.findOne({ where: { whatsapp_id: jid } }) : null;
         if (!existing) existing = await this.prospectoRepo.findOne({ where: { telefono } });
         
@@ -428,33 +158,15 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
 
         const rows = await this.prospectoRepo.query(`
             SELECT
-                p.id,
-                p.nombre,
-                p.apellido,
-                p.telefono,
-                p.whatsapp_id,
-                p.email,
-                p.pais,
-                p.curso_interes,
-                p.origen,
-                p.estado,
-                p.asignado_a,
-                p.etiquetas,
-                p.whatsapp_ultimo_leido_at,
-                p.fue_alumno,
-                p.fecha_ingreso,
-                p.notas_generales,
+                p.id, p.nombre, p.apellido, p.telefono, p.whatsapp_id, p.email,
+                p.pais, p.curso_interes, p.origen, p.estado, p.asignado_a,
+                p.etiquetas, p.whatsapp_ultimo_leido_at, p.fue_alumno,
+                p.fecha_ingreso, p.notas_generales,
                 row_to_json(m.*) AS ultimo_mensaje,
                 COALESCE(u.no_leidos, 0)::int AS no_leidos
             FROM prospecto p
             LEFT JOIN (
-                SELECT DISTINCT ON (id_prospecto)
-                    id_mensaje,
-                    id_prospecto,
-                    direccion,
-                    cuerpo_mensaje,
-                    fecha_envio,
-                    estado_lectura
+                SELECT DISTINCT ON (id_prospecto) *
                 FROM mensajes_whatsapp
                 ORDER BY id_prospecto, fecha_envio DESC, id_mensaje DESC
             ) m ON m.id_prospecto = p.id
@@ -465,8 +177,7 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
                   AND um.direccion = 'entrante'
                   AND (p.whatsapp_ultimo_leido_at IS NULL OR um.fecha_envio > p.whatsapp_ultimo_leido_at)
             ) u ON true
-            WHERE p.telefono IS NOT NULL
-              AND p.origen = $1
+            WHERE p.telefono IS NOT NULL AND p.origen = $1
             ORDER BY (COALESCE(u.no_leidos, 0) > 0) DESC, COALESCE(m.fecha_envio, p.fecha_ingreso) DESC NULLS LAST, p.fecha_ingreso DESC
             LIMIT $2 OFFSET $3
         `, ['WhatsApp', limit + 1, offset]);
@@ -474,75 +185,28 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
         const pageRows = rows.slice(0, limit);
         const items = await Promise.all(pageRows.map((row: any) => {
             const prospecto = this.prospectoRepo.create({
-                id: row.id,
-                nombre: row.nombre,
-                apellido: row.apellido,
-                telefono: row.telefono,
-                whatsapp_id: row.whatsapp_id,
-                email: row.email,
-                pais: row.pais,
-                curso_interes: row.curso_interes,
-                origen: row.origen,
-                estado: row.estado,
-                asignado_a: row.asignado_a,
-                etiquetas: this.normalizeTags(row.etiquetas),
-                whatsapp_ultimo_leido_at: row.whatsapp_ultimo_leido_at,
-                fue_alumno: row.fue_alumno,
-                fecha_ingreso: row.fecha_ingreso,
-                notas_generales: row.notas_generales,
+                id: row.id, nombre: row.nombre, apellido: row.apellido, telefono: row.telefono,
+                whatsapp_id: row.whatsapp_id, email: row.email, pais: row.pais,
+                curso_interes: row.curso_interes, origen: row.origen, estado: row.estado,
+                asignado_a: row.asignado_a, etiquetas: this.normalizeTags(row.etiquetas),
+                whatsapp_ultimo_leido_at: row.whatsapp_ultimo_leido_at, fue_alumno: row.fue_alumno,
+                fecha_ingreso: row.fecha_ingreso, notas_generales: row.notas_generales,
             });
 
-            const lastMessage: MensajeWhatsApp | null = row.ultimo_mensaje
-                ? this.mensajeRepo.create({
-                    id_mensaje: row.ultimo_mensaje.id_mensaje,
-                    id_prospecto: row.ultimo_mensaje.id_prospecto,
-                    direccion: row.ultimo_mensaje.direccion,
-                    cuerpo_mensaje: row.ultimo_mensaje.cuerpo_mensaje,
-                    fecha_envio: new Date(row.ultimo_mensaje.fecha_envio),
-                    estado_lectura: row.ultimo_mensaje.estado_lectura,
-                })
-                : null;
+            const lastMessage = row.ultimo_mensaje ? this.mensajeRepo.create({
+                ...row.ultimo_mensaje, fecha_envio: new Date(row.ultimo_mensaje.fecha_envio)
+            }) : null;
 
             return this.serializeConversation(prospecto, lastMessage, Number(row.no_leidos || 0));
         }));
 
-        return {
-            items,
-            hasMore: rows.length > limit,
-            limit,
-            offset,
-        };
+        return { items, hasMore: rows.length > limit, limit, offset };
     }
 
     async messages(prospectoId: string, options: MessageQueryOptions = {}) {
         if (!prospectoId) throw new BadRequestException('prospecto_id es requerido');
-
         const prospecto = await this.prospectoRepo.findOneBy({ id: prospectoId });
         if (!prospecto) throw new NotFoundException('Prospecto no encontrado');
-
-        let changed = false;
-        const shouldResolveContact = this.shouldResolveContact(options.resolveContact);
-
-        // Sincronización proactiva del número si es un ID largo
-        if (shouldResolveContact && this.isReady && prospecto.telefono && prospecto.telefono.length >= 12) {
-            console.log(`Attempting to resolve real number for ${prospecto.telefono}...`);
-            try {
-                const contact = await this.client.getContactById(`${prospecto.telefono}@c.us`);
-                console.log(`Contact info resolved: number=${contact?.number}, name=${contact?.name}, id=${contact?.id?._serialized}`);
-                if (contact && contact.number && contact.number !== prospecto.telefono) {
-                    prospecto.telefono = contact.number;
-                    changed = true;
-                }
-            } catch (err) {
-                console.error(`FAILED to resolve real number for ${prospecto.telefono}:`, err);
-            }
-        }
-        
-        // Si hemos detectado un cambio, guardamos para persistir el número real
-        if (changed) {
-            await this.prospectoRepo.save(prospecto);
-            console.log(`Número resuelto con éxito para ${prospecto.nombre}: ${prospecto.telefono}`);
-        }
 
         const limit = this.parseLimit(options.limit, 60, 200);
         const before = this.parseDate(options.before);
@@ -550,17 +214,14 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
         if (before) where.fecha_envio = LessThan(before);
 
         const mensajes = await this.mensajeRepo.find({
-            where,
-            order: { fecha_envio: 'DESC' },
-            take: limit + 1,
+            where, order: { fecha_envio: 'DESC' }, take: limit + 1,
         });
         const page = mensajes.slice(0, limit).reverse();
 
         return {
             prospecto: await this.serializeConversation(prospecto, before ? undefined : (mensajes[0] || null)),
             mensajes: page.map(m => this.serializeMessage(m)),
-            hasMore: mensajes.length > limit,
-            limit,
+            hasMore: mensajes.length > limit, limit,
         };
     }
 
@@ -582,7 +243,7 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
                     const contact = contacts.find((c: any) => this.normalizePhone(c.wa_id) === telefono);
                     const prospecto = await this.getOrCreateProspecto(telefono, contact?.profile?.name);
                     const fecha = incoming.timestamp ? new Date(Number(incoming.timestamp) * 1000) : new Date();
-                    const text = incoming.text?.body || incoming.button?.text || incoming.interactive?.button_reply?.title || '[Mensaje no textual]';
+                    const text = incoming.text?.body || incoming.button?.text || incoming.interactive?.button_reply?.title || '[Mensaje multimedia o interactivo]';
 
                     const message = this.mensajeRepo.create({
                         id_mensaje: incoming.id,
@@ -595,6 +256,10 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
                     });
 
                     await this.mensajeRepo.upsert(message, ['id_mensaje']);
+                    
+                    prospecto.fecha_ultimo_mensaje_cliente = fecha;
+                    await this.prospectoRepo.save(prospecto);
+
                     const payload = {
                         prospecto: await this.serializeConversation(prospecto),
                         mensaje: this.serializeMessage(message),
@@ -612,7 +277,6 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
                 }
             }
         }
-
         return { success: true };
     }
 
@@ -623,28 +287,11 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
     }
 
     async logout() {
-        this.isReady = false;
-        this.clearReconnectTimer();
-        try {
-            await this.destroyClient();
-            // Eliminamos la carpeta de sesiones para un reset completo
-            const fs = require('fs');
-            const path = require('path');
-            const sessionsPath = path.join(process.cwd(), 'sessions');
-            if (fs.existsSync(sessionsPath)) {
-                fs.rmSync(sessionsPath, { recursive: true, force: true });
-            }
-            console.log('WhatsApp session cleared.');
-        } catch (err) {
-            console.error('Error during logout:', err);
-        }
-        // Reiniciamos el cliente
-        this.reconnectAttempts = 0;
-        void this.initializeClient();
+        return { success: true, message: 'La sesión es gestionada por Meta Cloud API. No requiere desvinculación.' };
     }
 
     getStatus() {
-        return { isReady: this.isReady };
+        return { isReady: true, type: 'cloud_api' };
     }
 
     async markRead(prospectoId: string) {
@@ -664,44 +311,47 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
 
         const prospecto = data.id_prospecto
             ? await this.prospectoRepo.findOneBy({ id: data.id_prospecto })
-            : telefono
-                ? await this.getOrCreateProspecto(telefono)
-                : null;
-        if (!prospecto) throw new NotFoundException('Prospecto no encontrado');
-        if (!prospecto.telefono) throw new BadRequestException('El prospecto no tiene telefono');
+            : telefono ? await this.getOrCreateProspecto(telefono) : null;
+            
+        if (!prospecto || !prospecto.telefono) throw new BadRequestException('El prospecto no tiene telefono válido');
 
-        if (!this.isReady) {
-            throw new BadRequestException('El cliente de WhatsApp no está conectado (escanee el QR)');
-        }
+        const phoneId = process.env.META_PHONE_NUMBER_ID;
+        const token = process.env.META_SYSTEM_USER_TOKEN;
 
-        const waId = prospecto.whatsapp_id || (prospecto.telefono?.includes('@') ? prospecto.telefono : `${prospecto.telefono}@c.us`);
-        
-        if (!waId) {
-            throw new BadRequestException(`El prospecto no tiene un identificador de WhatsApp válido.`);
+        if (!phoneId || !token) {
+            throw new BadRequestException('Faltan credenciales de Meta en el archivo .env (META_PHONE_NUMBER_ID o META_SYSTEM_USER_TOKEN)');
         }
 
         let msgId = `local-${Date.now()}`;
-        
         try {
-            const chat = await this.client.getChatById(waId);
-            const sentMsg = await chat.sendMessage(cuerpo);
-            msgId = sentMsg.id.id;
-        } catch (err: any) {
-            console.error('Initial send failed:', err.message);
-            // Fallback para errores de LID: intentar con sufijo @lid
-            if (err.message?.includes('LID') && !waId.endsWith('@lid')) {
-                const lid = waId.split('@')[0] + '@lid';
-                console.log(`Retrying with LID format: ${lid}`);
-                try {
-                    const chat = await this.client.getChatById(lid);
-                    const sentMsg = await chat.sendMessage(cuerpo);
-                    msgId = sentMsg.id.id;
-                } catch (err2: any) {
-                    throw new BadRequestException({ error: 'Error de LID persistente', details: err2.message });
-                }
-            } else {
-                throw new BadRequestException({ error: 'Error al enviar por WhatsApp Web', details: err.message || err });
+            const url = `https://graph.facebook.com/v19.0/${phoneId}/messages`;
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    messaging_product: 'whatsapp',
+                    recipient_type: 'individual',
+                    to: prospecto.telefono,
+                    type: 'text',
+                    text: { preview_url: false, body: cuerpo }
+                })
+            });
+
+            const result = await response.json();
+
+            if (!response.ok) {
+                console.error('Meta API Error:', result);
+                throw new Error(result.error?.message || 'Error desconocido de Meta');
             }
+
+            if (result.messages && result.messages[0]) {
+                msgId = result.messages[0].id;
+            }
+        } catch (err: any) {
+            throw new BadRequestException({ error: 'Error al enviar por Meta Cloud API', details: err.message || err });
         }
 
         const message = this.mensajeRepo.create({
@@ -715,24 +365,18 @@ export class WhatsAppService implements OnModuleInit, OnModuleDestroy {
         });
         await this.mensajeRepo.save(message);
 
-        // --- AUTOMACIÓN: Cambio a "Primer Contacto" ---
+        // Cambio a Primer Contacto
         const estadoNuevo = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Nuevo' });
         const estadoPrimerContacto = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Primer Contacto' });
-
         if (estadoNuevo && estadoPrimerContacto && (prospecto.id_estado === estadoNuevo.id || prospecto.estado === 'Nuevo')) {
-            console.log(`Cambiando prospecto ${prospecto.nombre} de Nuevo a Primer Contacto`);
             prospecto.id_estado = estadoPrimerContacto.id;
-            prospecto.estado = estadoPrimerContacto.nombre; // Sync string for safety
+            prospecto.estado = estadoPrimerContacto.nombre;
         }
 
-        // Actualizar fecha de último mensaje del sistema
         prospecto.fecha_ultimo_mensaje_sistema = new Date();
         await this.prospectoRepo.save(prospecto);
 
-        const payload = {
-            prospecto: await this.serializeConversation(prospecto),
-            mensaje: this.serializeMessage(message),
-        };
+        const payload = { prospecto: await this.serializeConversation(prospecto), mensaje: this.serializeMessage(message) };
         this.gateway.emit('whatsapp:message', payload);
         return payload;
     }
