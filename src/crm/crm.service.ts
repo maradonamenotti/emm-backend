@@ -242,7 +242,7 @@ export class CrmService {
         const p = this.prospectoRepo.create({
             nombre: data.nombre.trim().toUpperCase(),
             apellido: data.apellido.trim().toUpperCase(),
-            telefono: data.telefono?.trim(),
+            telefono: data.telefono ? String(data.telefono).replace(/[^\d]/g, '') || undefined : undefined,
             email: data.email?.trim().toLowerCase(),
             curso_interes: data.curso_interes,
             origen: data.origen || 'WhatsApp',
@@ -260,6 +260,7 @@ export class CrmService {
         if (!p) throw new NotFoundException('Prospecto no encontrado');
         if (data.nombre) data.nombre = data.nombre.trim().toUpperCase();
         if (data.apellido) data.apellido = data.apellido.trim().toUpperCase();
+        if (data.telefono !== undefined) data.telefono = data.telefono ? String(data.telefono).replace(/[^\d]/g, '') || undefined : undefined;
         if (data.etiquetas !== undefined) data.etiquetas = this.normalizeTags(data.etiquetas);
         Object.assign(p, data);
         return this.prospectoRepo.save(p);
