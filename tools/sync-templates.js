@@ -2,7 +2,7 @@ const http = require('http');
 const https = require('https');
 
 const LOCAL_URL = 'http://localhost:3001/api/crm/plantillas';
-const PROD_URL = 'https://analiticos-backend-production.up.railway.app/api/crm/plantillas';
+const PROD_URL = 'https://emm-backend-production.up.railway.app/api/crm/plantillas';
 
 // Helper function to perform HTTP GET
 function get(url) {
