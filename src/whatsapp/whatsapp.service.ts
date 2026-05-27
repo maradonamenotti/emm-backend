@@ -28,6 +28,9 @@ interface MessageQueryOptions {
 
 @Injectable()
 export class WhatsAppService {
+    private platformLocks = new Map<string, Promise<Prospecto>>();
+    private whatsappLocks = new Map<string, Promise<Prospecto>>();
+
     constructor(
         @InjectRepository(Prospecto, 'crm')
         private readonly prospectoRepo: Repository<Prospecto>,
@@ -140,85 +143,110 @@ export class WhatsAppService {
     }
 
     async getOrCreateProspectoForPlatform(senderId: string, platform: 'Facebook' | 'Instagram', whatsapp_id: string, recipientPageId: string) {
-        let existing = await this.prospectoRepo.findOne({ where: { whatsapp_id } });
-        if (existing) {
-            return existing;
-        }
-
-        let nombre = `USUARIO DE ${platform.toUpperCase()}`;
-        let apellido = senderId;
-
-        try {
-            const token = this.getTokenForPage(recipientPageId);
-            if (token) {
-                const fields = platform === 'Instagram' ? 'name,username' : 'first_name,last_name';
-                const url = `https://graph.facebook.com/v18.0/${senderId}?fields=${fields}&access_token=${token}`;
-                const res = await fetch(url);
-                if (res.ok) {
-                    const data = await res.json();
-                    if (platform === 'Instagram') {
-                        const fullName = (data.name || '').trim().toUpperCase();
-                        const username = (data.username || '').trim().toUpperCase();
-                        if (fullName) {
-                            const parts = fullName.split(/\s+/);
-                            nombre = parts.shift() || 'INSTAGRAM';
-                            apellido = parts.join(' ') || username || 'USER';
-                        } else if (username) {
-                            nombre = username;
-                            apellido = 'INSTAGRAM';
-                        }
-                    } else {
-                        const firstName = (data.first_name || '').trim().toUpperCase();
-                        const lastName = (data.last_name || '').trim().toUpperCase();
-                        if (firstName) nombre = firstName;
-                        if (lastName) apellido = lastName;
-                    }
-                } else {
-                    const errBody = await res.text();
-                    console.warn(`Meta Profile API returned status ${res.status}:`, errBody);
+        let promise = this.platformLocks.get(whatsapp_id);
+        if (!promise) {
+            promise = (async () => {
+                let existing = await this.prospectoRepo.findOne({ where: { whatsapp_id } });
+                if (existing) {
+                    return existing;
                 }
-            }
-        } catch (e) {
-            console.error('Error fetching user profile from Meta:', e);
-        }
 
-        const prospecto = this.prospectoRepo.create({
-            nombre,
-            apellido,
-            whatsapp_id,
-            origen: platform,
-            estado: 'Nuevo',
-            fue_alumno: false,
-        });
-        return this.prospectoRepo.save(prospecto);
+                let nombre = `USUARIO DE ${platform.toUpperCase()}`;
+                let apellido = senderId;
+
+                try {
+                    const token = this.getTokenForPage(recipientPageId);
+                    if (token) {
+                        const fields = platform === 'Instagram' ? 'name,username' : 'first_name,last_name';
+                        const url = `https://graph.facebook.com/v18.0/${senderId}?fields=${fields}&access_token=${token}`;
+                        const res = await fetch(url);
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (platform === 'Instagram') {
+                                const fullName = (data.name || '').trim().toUpperCase();
+                                const username = (data.username || '').trim().toUpperCase();
+                                if (fullName) {
+                                    const parts = fullName.split(/\s+/);
+                                    nombre = parts.shift() || 'INSTAGRAM';
+                                    apellido = parts.join(' ') || username || 'USER';
+                                } else if (username) {
+                                    nombre = username;
+                                    apellido = 'INSTAGRAM';
+                                }
+                            } else {
+                                const firstName = (data.first_name || '').trim().toUpperCase();
+                                const lastName = (data.last_name || '').trim().toUpperCase();
+                                if (firstName) nombre = firstName;
+                                if (lastName) apellido = lastName;
+                            }
+                        } else {
+                            const errBody = await res.text();
+                            console.warn(`Meta Profile API returned status ${res.status}:`, errBody);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error fetching user profile from Meta:', e);
+                }
+
+                const prospecto = this.prospectoRepo.create({
+                    nombre,
+                    apellido,
+                    whatsapp_id,
+                    origen: platform,
+                    estado: 'Nuevo',
+                    fue_alumno: false,
+                });
+                return this.prospectoRepo.save(prospecto);
+            })();
+            this.platformLocks.set(whatsapp_id, promise);
+            try {
+                return await promise;
+            } finally {
+                this.platformLocks.delete(whatsapp_id);
+            }
+        }
+        return promise;
     }
 
     async getOrCreateProspecto(telefono: string, displayName?: string, jid?: string) {
-        let existing = jid ? await this.prospectoRepo.findOne({ where: { whatsapp_id: jid } }) : null;
-        if (!existing) existing = await this.prospectoRepo.findOne({ where: { telefono } });
-        
-        if (existing) {
-            if (jid && !existing.whatsapp_id) {
-                existing.whatsapp_id = jid;
-                await this.prospectoRepo.save(existing);
+        const lockKey = jid || telefono;
+        let promise = this.whatsappLocks.get(lockKey);
+        if (!promise) {
+            promise = (async () => {
+                let existing = jid ? await this.prospectoRepo.findOne({ where: { whatsapp_id: jid } }) : null;
+                if (!existing) existing = await this.prospectoRepo.findOne({ where: { telefono } });
+                
+                if (existing) {
+                    if (jid && !existing.whatsapp_id) {
+                        existing.whatsapp_id = jid;
+                        await this.prospectoRepo.save(existing);
+                    }
+                    return existing;
+                }
+
+                const parts = (displayName || '').trim().split(/\s+/).filter(Boolean);
+                const nombre = (parts.shift() || 'WHATSAPP').toUpperCase();
+                const apellido = (parts.join(' ') || 'SIN APELLIDO').toUpperCase();
+
+                const prospecto = this.prospectoRepo.create({
+                    nombre,
+                    apellido,
+                    telefono,
+                    whatsapp_id: jid,
+                    origen: 'WhatsApp',
+                    estado: 'Nuevo',
+                    fue_alumno: false,
+                });
+                return this.prospectoRepo.save(prospecto);
+            })();
+            this.whatsappLocks.set(lockKey, promise);
+            try {
+                return await promise;
+            } finally {
+                this.whatsappLocks.delete(lockKey);
             }
-            return existing;
         }
-
-        const parts = (displayName || '').trim().split(/\s+/).filter(Boolean);
-        const nombre = (parts.shift() || 'WHATSAPP').toUpperCase();
-        const apellido = (parts.join(' ') || 'SIN APELLIDO').toUpperCase();
-
-        const prospecto = this.prospectoRepo.create({
-            nombre,
-            apellido,
-            telefono,
-            whatsapp_id: jid,
-            origen: 'WhatsApp',
-            estado: 'Nuevo',
-            fue_alumno: false,
-        });
-        return this.prospectoRepo.save(prospecto);
+        return promise;
     }
 
     async conversations(options: PaginationOptions = {}) {

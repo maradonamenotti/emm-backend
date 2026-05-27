@@ -340,6 +340,15 @@ export class CrmService {
             count: prospectos.filter(p => p.origen === o.valor).length,
         }));
 
+        const noLeidosChatsRes = await this.prospectoRepo.query(`
+            SELECT COUNT(DISTINCT p.id)::int AS count
+            FROM prospecto p
+            INNER JOIN mensajes_whatsapp um ON um.id_prospecto = p.id
+            WHERE um.direccion = 'entrante'
+              AND (p.whatsapp_ultimo_leido_at IS NULL OR um.fecha_envio > p.whatsapp_ultimo_leido_at);
+        `);
+        const noLeidosChatsCount = noLeidosChatsRes[0]?.count || 0;
+
         return {
             total,
             inscriptos,
@@ -348,6 +357,7 @@ export class CrmService {
             tasaConversion,
             porEstado,
             porOrigen,
+            noLeidosChatsCount,
             alertasSeguimiento: alertas.map(h => ({
                 id: h.id,
                 prospecto_id: h.prospecto_id,
