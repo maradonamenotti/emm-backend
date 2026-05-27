@@ -145,15 +145,34 @@ export class WhatsAppService {
             return existing;
         }
 
-        let displayName = '';
+        let nombre = `USUARIO DE ${platform.toUpperCase()}`;
+        let apellido = senderId;
+
         try {
             const token = this.getTokenForPage(recipientPageId);
             if (token) {
-                const url = `https://graph.facebook.com/v19.0/${senderId}?fields=first_name,last_name,name&access_token=${token}`;
+                const fields = platform === 'Instagram' ? 'name,username' : 'first_name,last_name';
+                const url = `https://graph.facebook.com/v18.0/${senderId}?fields=${fields}&access_token=${token}`;
                 const res = await fetch(url);
                 if (res.ok) {
                     const data = await res.json();
-                    displayName = data.name || `${data.first_name || ''} ${data.last_name || ''}`;
+                    if (platform === 'Instagram') {
+                        const fullName = (data.name || '').trim().toUpperCase();
+                        const username = (data.username || '').trim().toUpperCase();
+                        if (fullName) {
+                            const parts = fullName.split(/\s+/);
+                            nombre = parts.shift() || 'INSTAGRAM';
+                            apellido = parts.join(' ') || username || 'USER';
+                        } else if (username) {
+                            nombre = username;
+                            apellido = 'INSTAGRAM';
+                        }
+                    } else {
+                        const firstName = (data.first_name || '').trim().toUpperCase();
+                        const lastName = (data.last_name || '').trim().toUpperCase();
+                        if (firstName) nombre = firstName;
+                        if (lastName) apellido = lastName;
+                    }
                 } else {
                     const errBody = await res.text();
                     console.warn(`Meta Profile API returned status ${res.status}:`, errBody);
@@ -162,10 +181,6 @@ export class WhatsAppService {
         } catch (e) {
             console.error('Error fetching user profile from Meta:', e);
         }
-
-        const parts = (displayName || '').trim().split(/\s+/).filter(Boolean);
-        const nombre = (parts.shift() || platform.toUpperCase()).toUpperCase();
-        const apellido = (parts.join(' ') || 'SIN APELLIDO').toUpperCase();
 
         const prospecto = this.prospectoRepo.create({
             nombre,
@@ -472,7 +487,7 @@ export class WhatsAppService {
                     msgId = result.message_id;
                 }
             } catch (err: any) {
-                throw new BadRequestException({ error: `Error al enviar por ${origin}`, details: err.message || err });
+                throw new BadRequestException({ error: `Error al enviar por ${channel}`, details: err.message || err });
             }
 
             const message = this.mensajeRepo.create({
