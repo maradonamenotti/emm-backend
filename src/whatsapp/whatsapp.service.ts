@@ -572,17 +572,23 @@ export class WhatsAppService {
             let msgId = `local-${Date.now()}`;
             try {
                 const url = `https://graph.facebook.com/v19.0/me/messages`;
+                const payload: any = {
+                    recipient: { id: senderId },
+                    message: { text: cuerpo }
+                };
+
+                // Meta API no soporta 'messaging_type' en Instagram, lo omitimos.
+                if (channel === 'Facebook') {
+                    payload.messaging_type = 'RESPONSE';
+                }
+
                 const response = await fetch(url, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${token}`,
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        recipient: { id: senderId },
-                        messaging_type: 'RESPONSE',
-                        message: { text: cuerpo }
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 const result = await response.json();
