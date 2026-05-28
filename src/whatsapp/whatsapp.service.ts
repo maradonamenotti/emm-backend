@@ -28,8 +28,8 @@ interface MessageQueryOptions {
 
 @Injectable()
 export class WhatsAppService {
-    private platformLocks = new Map<string, Promise<Prospecto>>();
-    private whatsappLocks = new Map<string, Promise<Prospecto>>();
+    private platformLocks = new Map<string, Promise<{ prospecto: Prospecto; isNew: boolean }>>();
+    private whatsappLocks = new Map<string, Promise<{ prospecto: Prospecto; isNew: boolean }>>();
 
     constructor(
         @InjectRepository(Prospecto, 'crm')
@@ -148,7 +148,7 @@ export class WhatsAppService {
             promise = (async () => {
                 let existing = await this.prospectoRepo.findOne({ where: { whatsapp_id } });
                 if (existing) {
-                    return existing;
+                    return { prospecto: existing, isNew: false };
                 }
 
                 let nombre = `USUARIO DE ${platform.toUpperCase()}`;
@@ -196,7 +196,8 @@ export class WhatsAppService {
                     estado: 'Nuevo',
                     fue_alumno: false,
                 });
-                return this.prospectoRepo.save(prospecto);
+                const saved = await this.prospectoRepo.save(prospecto);
+                return { prospecto: saved, isNew: true };
             })();
             this.platformLocks.set(whatsapp_id, promise);
             try {
@@ -221,7 +222,7 @@ export class WhatsAppService {
                         existing.whatsapp_id = jid;
                         await this.prospectoRepo.save(existing);
                     }
-                    return existing;
+                    return { prospecto: existing, isNew: false };
                 }
 
                 const parts = (displayName || '').trim().split(/\s+/).filter(Boolean);
@@ -237,7 +238,8 @@ export class WhatsAppService {
                     estado: 'Nuevo',
                     fue_alumno: false,
                 });
-                return this.prospectoRepo.save(prospecto);
+                const saved = await this.prospectoRepo.save(prospecto);
+                return { prospecto: saved, isNew: true };
             })();
             this.whatsappLocks.set(lockKey, promise);
             try {
@@ -322,6 +324,36 @@ export class WhatsAppService {
         };
     }
 
+    private extractNameFromText(text: string): string | null {
+        if (!text) return null;
+        const match = text.match(/(?:mi nombre es|soy|me llamo)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ\s]+)(?:,|\.|-|\d|mi |y |$)/i);
+        if (match) {
+            const name = match[1].trim();
+            if (name.split(/\s+/).length <= 4) return name;
+        }
+        return null;
+    }
+
+    private async markAsReadMeta(senderId: string, pageId: string) {
+        const token = this.getTokenForPage(pageId);
+        if (!token) return;
+        try {
+            await fetch(`https://graph.facebook.com/v19.0/me/messages`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    recipient: { id: senderId },
+                    sender_action: 'mark_seen'
+                })
+            });
+        } catch (e) {
+            console.error('Error marking as read Meta API:', e);
+        }
+    }
+
     async processWebhook(body: any) {
         if (!body) return { success: false };
 
@@ -343,9 +375,17 @@ export class WhatsAppService {
                         if (!telefono || !incoming.id) continue;
 
                         const contact = contacts.find((c: any) => this.normalizePhone(c.wa_id) === telefono);
-                        const prospecto = await this.getOrCreateProspecto(telefono, contact?.profile?.name);
+                        const { prospecto, isNew } = await this.getOrCreateProspecto(telefono, contact?.profile?.name);
                         const fecha = this.parseTimestamp(incoming.timestamp);
                         const text = incoming.text?.body || incoming.button?.text || incoming.interactive?.button_reply?.title || '[Mensaje multimedia o interactivo]';
+
+                        const extractedName = this.extractNameFromText(text);
+                        if (extractedName && (prospecto.nombre === 'WHATSAPP' || prospecto.nombre.includes('USUARIO DE'))) {
+                            const parts = extractedName.split(/\s+/);
+                            prospecto.nombre = (parts.shift() || 'WHATSAPP').toUpperCase();
+                            prospecto.apellido = (parts.join(' ') || 'SIN APELLIDO').toUpperCase();
+                            await this.prospectoRepo.save(prospecto);
+                        }
 
                         const message = this.mensajeRepo.create({
                             id_mensaje: incoming.id,
@@ -367,6 +407,13 @@ export class WhatsAppService {
                             mensaje: this.serializeMessage(message),
                         };
                         this.gateway.emit('whatsapp:message', payload);
+
+                        if (isNew) {
+                            await this.send({
+                                id_prospecto: prospecto.id,
+                                cuerpo_mensaje: '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
+                            });
+                        }
                     }
 
                     for (const status of statuses) {
@@ -392,8 +439,16 @@ export class WhatsAppService {
                     // Skip echoes (messages sent by the page itself)
                     if (senderId === recipientPageId) continue;
 
-                    const incomingMessage = msgEvent.message;
-                    if (!incomingMessage || !incomingMessage.mid) continue;
+                    const incomingMessage = msgEvent.message || {};
+                    const isStoryMention = incomingMessage.attachments && incomingMessage.attachments[0]?.type === 'story_mention';
+                    const isReaction = msgEvent.reaction || isStoryMention;
+
+                    if (isReaction) {
+                        await this.markAsReadMeta(senderId, recipientPageId);
+                        continue; // No procesamos como mensaje entrante de texto
+                    }
+
+                    if (!incomingMessage.mid) continue;
 
                     // Skip echoes indicated by flag
                     if (incomingMessage.is_echo) continue;
@@ -403,7 +458,15 @@ export class WhatsAppService {
                     const platform = objectType === 'page' ? 'Facebook' : 'Instagram';
                     const whatsapp_id = `${platform.toLowerCase()}:${senderId}:${recipientPageId}`;
 
-                    const prospecto = await this.getOrCreateProspectoForPlatform(senderId, platform, whatsapp_id, recipientPageId);
+                    const { prospecto, isNew } = await this.getOrCreateProspectoForPlatform(senderId, platform, whatsapp_id, recipientPageId);
+
+                    const extractedName = this.extractNameFromText(text);
+                    if (extractedName && (prospecto.nombre.includes('USUARIO DE') || prospecto.apellido === 'INSTAGRAM' || prospecto.apellido === 'USER' || prospecto.apellido === senderId)) {
+                        const parts = extractedName.split(/\s+/);
+                        prospecto.nombre = (parts.shift() || prospecto.nombre).toUpperCase();
+                        prospecto.apellido = (parts.join(' ') || 'SIN APELLIDO').toUpperCase();
+                        await this.prospectoRepo.save(prospecto);
+                    }
 
                     const message = this.mensajeRepo.create({
                         id_mensaje: incomingMessage.mid,
@@ -425,6 +488,20 @@ export class WhatsAppService {
                         mensaje: this.serializeMessage(message),
                     };
                     this.gateway.emit('whatsapp:message', payload);
+
+                    const isStoryReply = incomingMessage.referral?.source_type === 'STORY' || msgEvent.referral?.source_type === 'STORY';
+
+                    if (isStoryReply && text && text !== '[Mensaje multimedia o adjunto]') {
+                        await this.send({
+                            id_prospecto: prospecto.id,
+                            cuerpo_mensaje: '👋 ¡Hola! Gracias por tu mensaje. Si estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊⚽'
+                        });
+                    } else if (isNew) {
+                        await this.send({
+                            id_prospecto: prospecto.id,
+                            cuerpo_mensaje: '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
+                        });
+                    }
                 }
             }
         }
@@ -460,9 +537,13 @@ export class WhatsAppService {
         const telefono = this.normalizePhone(data.telefono);
         if (!cuerpo) throw new BadRequestException('cuerpo_mensaje es requerido');
 
-        const prospecto = data.id_prospecto
-            ? await this.prospectoRepo.findOneBy({ id: data.id_prospecto })
-            : telefono ? await this.getOrCreateProspecto(telefono) : null;
+        let prospecto: Prospecto | null = null;
+        if (data.id_prospecto) {
+            prospecto = await this.prospectoRepo.findOneBy({ id: data.id_prospecto });
+        } else if (telefono) {
+            const res = await this.getOrCreateProspecto(telefono);
+            prospecto = res.prospecto;
+        }
             
         if (!prospecto) throw new BadRequestException('El prospecto no existe');
 
