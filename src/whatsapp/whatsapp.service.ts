@@ -797,12 +797,14 @@ export class WhatsAppService {
                 });
 
                 let payload: any;
+                let isCommentReply = false;
 
                 if (lastInbound && lastInbound.cuerpo_mensaje.startsWith('[Comentario]')) {
                     payload = {
                         recipient: { comment_id: lastInbound.id_mensaje },
                         message: { text: cuerpo }
                     };
+                    isCommentReply = true;
                 } else {
                     payload = {
                         recipient: { id: senderId },
@@ -813,7 +815,7 @@ export class WhatsAppService {
                     }
                 }
 
-                const response = await fetch(url, {
+                let response = await fetch(url, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${token}`,
@@ -822,10 +824,34 @@ export class WhatsAppService {
                     body: JSON.stringify(payload)
                 });
 
-                const result = await response.json();
+                let result = await response.json();
+
+                // Si ya respondimos a este comentario, intentamos mandar un DM normal
+                if (!response.ok && isCommentReply && result.error?.error_subcode === 2534023) {
+                    console.log('Comentario ya respondido. Intentando fallback a DM normal...');
+                    payload = {
+                        recipient: { id: senderId },
+                        message: { text: cuerpo }
+                    };
+                    if (channel === 'Facebook') {
+                        payload.messaging_type = 'RESPONSE';
+                    }
+                    response = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(payload)
+                    });
+                    result = await response.json();
+                }
 
                 if (!response.ok) {
                     console.error('Meta API Error:', result);
+                    if (result.error?.error_subcode === 2534023) {
+                        throw new Error('Meta solo permite 1 respuesta privada por comentario. Esperá a que el usuario te conteste.');
+                    }
                     throw new Error(result.error?.message || 'Error desconocido de Meta');
                 }
 
