@@ -56,4 +56,9 @@ export class WhatsAppController {
     send(@Body() body: { id_prospecto?: string; telefono?: string; cuerpo_mensaje?: string; text?: string }) {
         return this.whatsAppService.send(body);
     }
+
+    @Post('broadcast')
+    async broadcast(@Body() body: { studentIds: string[], plantillaId: string }) {
+        return this.whatsAppService.sendBroadcastToStudents(body.studentIds, body.plantillaId);
+    }
 }

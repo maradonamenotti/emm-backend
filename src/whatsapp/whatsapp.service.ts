@@ -5,6 +5,7 @@ import { Prospecto } from '../entities/Prospecto';
 import { MensajeWhatsApp, WhatsAppEstadoLectura } from '../entities/MensajeWhatsApp';
 import { EstadoEmbudo } from '../entities/EstadoEmbudo';
 import { CrmPlantilla } from '../entities/CrmPlantilla';
+import { Student } from '../entities/Student';
 import { WhatsAppGateway } from './whatsapp.gateway';
 import { AiTriageService } from './ai-triage.service';
 
@@ -42,6 +43,8 @@ export class WhatsAppService {
         private readonly estadoEmbudoRepo: Repository<EstadoEmbudo>,
         @InjectRepository(CrmPlantilla, 'crm')
         private readonly plantillaRepo: Repository<CrmPlantilla>,
+        @InjectRepository(Student)
+        private readonly studentRepo: Repository<Student>,
         private readonly gateway: WhatsAppGateway,
         private readonly aiTriageService: AiTriageService,
     ) {}
@@ -671,7 +674,66 @@ export class WhatsAppService {
     }
 
     async logout() {
-        return { success: true, message: 'La sesión es gestionada por Meta Cloud API. No requiere desvinculación.' };
+        return { success: true, message: 'La sesión no requiere reseteo con Cloud API.' };
+    }
+
+    async sendBroadcastToStudents(studentIds: string[], plantillaId: string) {
+        const plantilla = await this.plantillaRepo.findOneBy({ id: plantillaId });
+        if (!plantilla) throw new NotFoundException('Plantilla no encontrada');
+
+        const students = await this.studentRepo.findByIds(studentIds);
+        let sent = 0;
+        let failed = 0;
+
+        for (const student of students) {
+            if (!student.telefono) {
+                failed++;
+                continue;
+            }
+
+            const cleanPhone = student.telefono.replace(/\D/g, '');
+            if (cleanPhone.length < 8) {
+                failed++;
+                continue;
+            }
+
+            // Replace variables in plantilla
+            let finalBody = plantilla.texto;
+            const fullName = [student.nombre, student.apellido].filter(Boolean).join(' ').trim();
+            finalBody = finalBody.replace(/\{\{\s*nombre\s*\}\}/gi, fullName || student.nombre || '');
+            finalBody = finalBody.replace(/\[Nombre\]/gi, fullName || student.nombre || '');
+            finalBody = finalBody.replace(/\{\{\s*curso\s*\}\}/gi, student.licencia || 'el curso');
+            finalBody = finalBody.replace(/\[Curso\]/gi, student.licencia || 'el curso');
+
+            try {
+                const response = await fetch(`https://graph.facebook.com/v19.0/${process.env.META_PHONE_NUMBER_ID}/messages`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        messaging_product: 'whatsapp',
+                        recipient_type: 'individual',
+                        to: cleanPhone,
+                        type: 'text',
+                        text: {
+                            body: finalBody
+                        }
+                    })
+                });
+
+                if (!response.ok) {
+                    failed++;
+                } else {
+                    sent++;
+                }
+            } catch (e) {
+                failed++;
+            }
+        }
+
+        return { success: true, sent, failed };
     }
 
     getStatus() {
