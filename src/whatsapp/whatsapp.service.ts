@@ -567,6 +567,75 @@ export class WhatsAppService {
                             '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
                         );
                     }
+                    }
+                }
+
+                const changesList = Array.isArray(entry?.changes) ? entry.changes : [];
+                for (const change of changesList) {
+                    let senderId: string | undefined;
+                    let text: string | undefined;
+                    let msgId: string | undefined;
+                    let senderName: string | undefined;
+
+                    if (objectType === 'instagram' && change.field === 'comments') {
+                        senderId = change.value?.from?.id;
+                        senderName = change.value?.from?.username;
+                        text = change.value?.text;
+                        msgId = change.value?.id;
+                    } else if (objectType === 'page' && change.field === 'feed') {
+                        const value = change.value || {};
+                        if (value.item === 'comment' && value.verb === 'add') {
+                            senderId = value.from?.id;
+                            senderName = value.from?.name;
+                            text = value.message;
+                            msgId = value.comment_id;
+                        }
+                    }
+
+                    if (!senderId || !text || !msgId || senderId === recipientPageId) continue;
+
+                    const fecha = this.parseTimestamp(entry.time || Date.now());
+                    const platform = objectType === 'page' ? 'Facebook' : 'Instagram';
+                    const whatsapp_id = `${platform.toLowerCase()}:${senderId}:${recipientPageId}`;
+
+                    const { prospecto, isNew } = await this.getOrCreateProspectoForPlatform(senderId, platform, whatsapp_id, recipientPageId);
+                    
+                    const commentText = `[Comentario] ${text}`;
+
+                    if (senderName && (prospecto.nombre.includes('USUARIO DE') || prospecto.apellido === 'INSTAGRAM' || prospecto.apellido === 'USER' || prospecto.apellido === senderId)) {
+                        const parts = senderName.split(/\s+/);
+                        prospecto.nombre = (parts.shift() || prospecto.nombre).toUpperCase();
+                        prospecto.apellido = (parts.join(' ') || 'SIN APELLIDO').toUpperCase();
+                        await this.prospectoRepo.save(prospecto);
+                    }
+
+                    const message = this.mensajeRepo.create({
+                        id_mensaje: msgId,
+                        prospecto,
+                        id_prospecto: prospecto.id,
+                        direccion: 'entrante',
+                        cuerpo_mensaje: commentText,
+                        fecha_envio: fecha,
+                        estado_lectura: 'Entregado',
+                    });
+
+                    await this.mensajeRepo.upsert(message, ['id_mensaje']);
+
+                    prospecto.fecha_ultimo_mensaje_cliente = fecha;
+                    await this.prospectoRepo.save(prospecto);
+
+                    const payload = {
+                        prospecto: await this.serializeConversation(prospecto),
+                        mensaje: this.serializeMessage(message),
+                    };
+                    this.gateway.emit('whatsapp:message', payload);
+
+                    await this.processTriageAndAutoReply(
+                        prospecto,
+                        commentText,
+                        isNew,
+                        '👋 ¡Hola! Gracias por tu comentario. Si estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊⚽'
+                    );
                 }
             }
         }
