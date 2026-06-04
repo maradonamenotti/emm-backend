@@ -702,8 +702,8 @@ export class WhatsAppService {
             const fullName = [student.nombre, student.apellido].filter(Boolean).join(' ').trim();
             finalBody = finalBody.replace(/\{\{\s*nombre\s*\}\}/gi, fullName || student.nombre || '');
             finalBody = finalBody.replace(/\[Nombre\]/gi, fullName || student.nombre || '');
-            finalBody = finalBody.replace(/\{\{\s*curso\s*\}\}/gi, student.licencia || 'el curso');
-            finalBody = finalBody.replace(/\[Curso\]/gi, student.licencia || 'el curso');
+            finalBody = finalBody.replace(/\{\{\s*curso\s*\}\}/gi, student.carrera_licencia || 'el curso');
+            finalBody = finalBody.replace(/\[Curso\]/gi, student.carrera_licencia || 'el curso');
 
             try {
                 const response = await fetch(`https://graph.facebook.com/v19.0/${process.env.META_PHONE_NUMBER_ID}/messages`, {
