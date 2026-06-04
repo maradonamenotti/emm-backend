@@ -705,14 +705,27 @@ export class WhatsAppService {
             let msgId = `local-${Date.now()}`;
             try {
                 const url = `https://graph.facebook.com/v19.0/me/messages`;
-                const payload: any = {
-                    recipient: { id: senderId },
-                    message: { text: cuerpo }
-                };
 
-                // Meta API no soporta 'messaging_type' en Instagram, lo omitimos.
-                if (channel === 'Facebook') {
-                    payload.messaging_type = 'RESPONSE';
+                const lastInbound = await this.mensajeRepo.findOne({
+                    where: { id_prospecto: prospecto.id, direccion: 'entrante' },
+                    order: { fecha_envio: 'DESC' }
+                });
+
+                let payload: any;
+
+                if (lastInbound && lastInbound.cuerpo_mensaje.startsWith('[Comentario]')) {
+                    payload = {
+                        recipient: { comment_id: lastInbound.id_mensaje },
+                        message: { text: cuerpo }
+                    };
+                } else {
+                    payload = {
+                        recipient: { id: senderId },
+                        message: { text: cuerpo }
+                    };
+                    if (channel === 'Facebook') {
+                        payload.messaging_type = 'RESPONSE';
+                    }
                 }
 
                 const response = await fetch(url, {
