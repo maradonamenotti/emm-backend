@@ -5,6 +5,9 @@ export interface TriageResult {
   estado_sugerido: 'SPAM_BASURA' | 'LEAD_NUEVO' | 'SOPORTE_ALUMNO' | 'HUMANO_REQUERIDO';
   curso_mencionado: string | null;
   es_comprobante_pago: boolean;
+  nombre_extraido?: string | null;
+  email_extraido?: string | null;
+  telefono_extraido?: string | null;
 }
 
 @Injectable()
@@ -40,7 +43,10 @@ ESTRUCTURA OBLIGATORIA DEL JSON DE SALIDA:
 {
   "estado_sugerido": "SPAM_BASURA" | "LEAD_NUEVO" | "SOPORTE_ALUMNO" | "HUMANO_REQUERIDO",
   "curso_mencionado": "Nombre del curso o carrera si lo menciona explícitamente, de lo contrario null",
-  "es_comprobante_pago": true | false
+  "es_comprobante_pago": true | false,
+  "nombre_extraido": "Si el usuario dice 'me llamo Juan' o firma con su nombre, ponlo aquí, sino null",
+  "email_extraido": "Si el usuario da su email, ponlo aquí, sino null",
+  "telefono_extraido": "Si el usuario escribe su teléfono, ponlo aquí, sino null"
 }`;
 
     try {

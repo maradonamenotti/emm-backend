@@ -370,6 +370,18 @@ export class WhatsAppService {
                 prospecto.ai_curso_mencionado = triageResult.curso_mencionado;
                 prospecto.ai_es_comprobante = triageResult.es_comprobante_pago;
 
+                if (triageResult.nombre_extraido && (!prospecto.nombre || prospecto.nombre.includes('SIN APELLIDO'))) {
+                    const parts = triageResult.nombre_extraido.split(' ');
+                    prospecto.nombre = parts[0];
+                    prospecto.apellido = parts.slice(1).join(' ');
+                }
+                if (triageResult.email_extraido && !prospecto.email) {
+                    prospecto.email = triageResult.email_extraido;
+                }
+                if (triageResult.telefono_extraido && (!prospecto.telefono || prospecto.whatsapp_id?.startsWith('facebook:') || prospecto.whatsapp_id?.startsWith('instagram:'))) {
+                    prospecto.telefono = triageResult.telefono_extraido;
+                }
+
                 if (triageResult.estado_sugerido === 'SPAM_BASURA') {
                     isSpam = true;
                     if (!prospecto.etiquetas) prospecto.etiquetas = [];
@@ -514,7 +526,18 @@ export class WhatsAppService {
                     // Skip echoes indicated by flag
                     if (incomingMessage.is_echo) continue;
 
-                    const text = incomingMessage.text || '[Mensaje multimedia o adjunto]';
+                    let text = incomingMessage.text || '';
+                    if (!text && incomingMessage.attachments && incomingMessage.attachments.length > 0) {
+                        const type = incomingMessage.attachments[0].type;
+                        const url = incomingMessage.attachments[0].payload?.url;
+                        if (url) {
+                            text = `[Adjunto ${type}](${url})`;
+                        } else {
+                            text = `[Adjunto ${type}]`;
+                        }
+                    } else if (!text) {
+                        text = '[Mensaje multimedia o adjunto]';
+                    }
                     const fecha = this.parseTimestamp(msgEvent.timestamp);
                     const platform = objectType === 'page' ? 'Facebook' : 'Instagram';
                     const whatsapp_id = `${platform.toLowerCase()}:${senderId}:${recipientPageId}`;
