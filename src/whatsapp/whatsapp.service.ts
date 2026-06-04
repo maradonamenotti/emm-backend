@@ -567,7 +567,6 @@ export class WhatsAppService {
                             '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
                         );
                     }
-                    }
                 }
 
                 const changesList = Array.isArray(entry?.changes) ? entry.changes : [];
