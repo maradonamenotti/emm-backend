@@ -25,31 +25,63 @@ export class ImportsService {
     for (const rawRow of (rawData as any[])) {
       const row = normalizeKeys(rawRow);
 
-      const docRaw = row.documento || row.dni || row['nro documento'] || row['nro. documento'];
+      const getValue = (keywords: string[], exact: string[] = []) => {
+        for (const ex of exact) {
+          if (row[ex] !== undefined) return row[ex];
+        }
+        for (const k of Object.keys(row)) {
+          if (keywords.some(kw => k.includes(kw))) return row[k];
+        }
+        return null;
+      };
+
+      const docRaw = getValue(['documento', 'dni', 'doc'], ['dni', 'documento']);
       const docClean = cleanDNI(docRaw);
       if (!docClean) continue;
 
-      let rawLic = row.carrera || row['carrera / licencia / curso'] || row.licencia || null;
+      let rawLic = getValue(['carrera', 'licencia', 'curso', 'programa'], ['carrera', 'licencia']);
       let cleanLic = rawLic ? String(rawLic).toUpperCase().replace('LICENCIA ', '').trim() : null;
 
-      let student = await this.studentRepo.findOne({ where: { documento: docClean } });
-      if (!student) student = await this.studentRepo.findOne({ where: { documento: String(docRaw || "") } });
+      let student: Student | null = null;
+      
+      const studentsWithDni = await this.studentRepo.createQueryBuilder('s')
+        .where('s.documento = :doc OR s.documento = :rawDoc', { doc: docClean, rawDoc: String(docRaw || "") })
+        .getMany();
+        
+      if (studentsWithDni.length > 0) {
+        if (cleanLic) {
+          student = studentsWithDni.find(s => s.carrera_licencia === cleanLic) || null;
+        }
+        if (!student) {
+          student = studentsWithDni.find(s => s.en_analiticos) || null;
+        }
+        if (!student) {
+          student = studentsWithDni.find(s => !s.carrera_licencia) || studentsWithDni[0];
+        }
+      }
       
       if (student && student.estado_analitico === 'emitido') continue;
       if (!student) student = new Student();
 
       student.documento = docClean;
-      student.nombre = row.nombre || "Sin Nombre";
-      student.apellido = row.apellido || "Sin Apellido";
-      student.email = row.email || null;
+      student.nombre = getValue(['nombre'], ['nombre']) || "Sin Nombre";
+      student.apellido = getValue(['apellido'], ['apellido']) || "Sin Apellido";
+      student.email = getValue(['email', 'correo', 'mail'], ['email']) || null;
       student.carrera_licencia = cleanLic || student.carrera_licencia || undefined;
-      student.comision = row.comision || null;
+      student.comision = getValue(['comision', 'cohorte'], ['comision']) || null;
+      
+      const quinttosRaw = getValue(['legajo', 'quinttos'], ['#', 'legajo']);
+      student.quinttos_id = quinttosRaw ? Number(quinttosRaw) : undefined;
+      
+      student.matricula = getValue(['matricula', 'matri'], ['matricula']) || null;
+      student.pais_residencia = getValue(['pais', 'residencia', 'nacionalidad'], ['pais']) || null;
+      student.datos_extra = rawRow;
 
       const uniqueKey = `${docClean}-${cleanLic}`;
       if (seenSet.has(uniqueKey)) {
         student.situacion = "DUPLICADO";
       } else {
-        student.situacion = row.situacion || row['situacion academica'] || row['situación académica'] || row['estado'] || null;
+        student.situacion = getValue(['situacion', 'estado'], ['situacion academica', 'estado']) || null;
         seenSet.add(uniqueKey);
       }
 
@@ -229,6 +261,7 @@ export class ImportsService {
         }
       }
 
+      student.en_analiticos = true;
       pushHistorial(student, `Importación de notas desde excel completada (${isTwoColumnsFormat ? '2 intentos' : 'consecutivo'}).`, req);
       await this.studentRepo.save(student);
 

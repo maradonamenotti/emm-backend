@@ -4,7 +4,9 @@ import { LessThan, Repository } from 'typeorm';
 import { Prospecto } from '../entities/Prospecto';
 import { MensajeWhatsApp, WhatsAppEstadoLectura } from '../entities/MensajeWhatsApp';
 import { EstadoEmbudo } from '../entities/EstadoEmbudo';
+import { CrmPlantilla } from '../entities/CrmPlantilla';
 import { WhatsAppGateway } from './whatsapp.gateway';
+import { AiTriageService } from './ai-triage.service';
 
 export interface SerializedMessage {
     id_mensaje: string;
@@ -38,7 +40,10 @@ export class WhatsAppService {
         private readonly mensajeRepo: Repository<MensajeWhatsApp>,
         @InjectRepository(EstadoEmbudo, 'crm')
         private readonly estadoEmbudoRepo: Repository<EstadoEmbudo>,
+        @InjectRepository(CrmPlantilla, 'crm')
+        private readonly plantillaRepo: Repository<CrmPlantilla>,
         private readonly gateway: WhatsAppGateway,
+        private readonly aiTriageService: AiTriageService,
     ) {}
 
     private parseLimit(value: unknown, fallback = 60, max = 200) {
@@ -354,6 +359,62 @@ export class WhatsAppService {
         }
     }
 
+    private async processTriageAndAutoReply(prospecto: Prospecto, text: string, isNew: boolean, defaultWelcomeMessage: string) {
+        let triageResult = null;
+        let isSpam = false;
+
+        if (text && text !== '[Mensaje multimedia o interactivo]' && text !== '[Mensaje multimedia o adjunto]') {
+            triageResult = await this.aiTriageService.classifyMessage(text);
+            if (triageResult) {
+                prospecto.ai_estado_sugerido = triageResult.estado_sugerido;
+                prospecto.ai_curso_mencionado = triageResult.curso_mencionado;
+                prospecto.ai_es_comprobante = triageResult.es_comprobante_pago;
+
+                if (triageResult.estado_sugerido === 'SPAM_BASURA') {
+                    isSpam = true;
+                    if (!prospecto.etiquetas) prospecto.etiquetas = [];
+                    if (!prospecto.etiquetas.includes('SPAM_BASURA')) {
+                        prospecto.etiquetas.push('SPAM_BASURA');
+                    }
+                    const estadoPerdido = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Perdido' });
+                    if (estadoPerdido) {
+                        prospecto.id_estado = estadoPerdido.id;
+                        prospecto.estado = estadoPerdido.nombre;
+                    }
+                }
+                await this.prospectoRepo.save(prospecto);
+            }
+        }
+
+        let autoReplied = false;
+        if (triageResult && !isSpam) {
+            const query = this.plantillaRepo.createQueryBuilder('p')
+                .where('p.activa = true')
+                .andWhere('p.estado_sugerido = :estado', { estado: triageResult.estado_sugerido });
+            
+            if (triageResult.curso_mencionado) {
+                query.andWhere('(p.curso ILIKE :curso OR p.curso IS NULL)', { curso: `%${triageResult.curso_mencionado}%` });
+                query.orderBy('p.curso', 'DESC');
+            } else {
+                query.andWhere('p.curso IS NULL');
+            }
+            
+            const plantilla = await query.getOne();
+            
+            if (plantilla && plantilla.texto) {
+                await this.send({ id_prospecto: prospecto.id, cuerpo_mensaje: plantilla.texto });
+                autoReplied = true;
+            }
+        }
+
+        if (!autoReplied && isNew && defaultWelcomeMessage) {
+            await this.send({
+                id_prospecto: prospecto.id,
+                cuerpo_mensaje: defaultWelcomeMessage
+            });
+        }
+    }
+
     async processWebhook(body: any) {
         if (!body) return { success: false };
 
@@ -408,12 +469,12 @@ export class WhatsAppService {
                         };
                         this.gateway.emit('whatsapp:message', payload);
 
-                        if (isNew) {
-                            await this.send({
-                                id_prospecto: prospecto.id,
-                                cuerpo_mensaje: '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
-                            });
-                        }
+                        await this.processTriageAndAutoReply(
+                            prospecto,
+                            text,
+                            isNew,
+                            '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
+                        );
                     }
 
                     for (const status of statuses) {
@@ -492,15 +553,19 @@ export class WhatsAppService {
                     const isStoryReply = incomingMessage.referral?.source_type === 'STORY' || msgEvent.referral?.source_type === 'STORY';
 
                     if (isStoryReply && text && text !== '[Mensaje multimedia o adjunto]') {
-                        await this.send({
-                            id_prospecto: prospecto.id,
-                            cuerpo_mensaje: '👋 ¡Hola! Gracias por tu mensaje. Si estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊⚽'
-                        });
-                    } else if (isNew) {
-                        await this.send({
-                            id_prospecto: prospecto.id,
-                            cuerpo_mensaje: '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
-                        });
+                        await this.processTriageAndAutoReply(
+                            prospecto,
+                            text,
+                            false,
+                            '👋 ¡Hola! Gracias por tu mensaje. Si estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊⚽'
+                        );
+                    } else {
+                        await this.processTriageAndAutoReply(
+                            prospecto,
+                            text,
+                            isNew,
+                            '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
+                        );
                     }
                 }
             }

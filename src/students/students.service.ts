@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { Student } from '../entities/Student';
@@ -7,13 +7,32 @@ import { normalizeSubjectName, pushHistorial } from '../common/helpers';
 import { SUBJECTS_BY_LICENSE } from '../config/subjects';
 
 @Injectable()
-export class StudentsService {
+export class StudentsService implements OnModuleInit {
   constructor(
     @InjectRepository(Student)
     private readonly studentsRepository: Repository<Student>,
     @InjectRepository(Nota)
     private readonly notasRepository: Repository<Nota>,
   ) {}
+
+  async onModuleInit() {
+    try {
+      console.log('Running automatic en_analiticos migration check...');
+      const result = await this.studentsRepository.query(`
+        UPDATE student 
+        SET en_analiticos = true 
+        WHERE en_analiticos = false 
+        AND (
+          id IN (SELECT DISTINCT student_id FROM "nota") 
+          OR estado_analitico = 'emitido' 
+          OR situacion = 'CREADO MANUAL'
+        )
+      `);
+      console.log('en_analiticos migration completed.');
+    } catch (err) {
+      console.error('Error running en_analiticos migration:', err);
+    }
+  }
 
   private formatStudent(s: Student) {
     const notas = s.notas || [];
@@ -23,11 +42,13 @@ export class StudentsService {
 
     return {
       id: s.id,
-      dni: s.documento,
+      dni: s.documento, // legacy support for pdfService
+      documento: s.documento,
       nombre: s.nombre,
       apellido: s.apellido,
       email: s.email,
       nacionalidad: s.nacionalidad,
+      pais_residencia: s.pais_residencia,
       comision: s.comision,
       situacion: s.situacion,
       estado_analitico: s.estado_analitico || 'borrador',
@@ -37,7 +58,12 @@ export class StudentsService {
       pagos_ok: emitido || !!s.pagos_ok,
       documentacion_ok: emitido || !!s.documentacion_ok,
       historial: s.historial || [],
-      licencia: s.carrera_licencia || "N/A",
+      licencia: s.carrera_licencia || "N/A", // legacy support
+      carrera_licencia: s.carrera_licencia,
+      quinttos_id: s.quinttos_id,
+      matricula: s.matricula,
+      datos_extra: s.datos_extra,
+      en_analiticos: !!s.en_analiticos,
       promedio,
       notas: notas.map(n => ({ materia: n.asignatura, nota: Number(n.nota), fecha: n.fecha }))
     };
@@ -77,6 +103,7 @@ export class StudentsService {
     student.fecha_fin_cursada = fecha_fin_cursada || undefined;
     student.estado_analitico = 'borrador';
     student.situacion = 'CREADO MANUAL';
+    student.en_analiticos = true;
     student.password = student.documento;
 
     pushHistorial(student, 'Alumno creado manualmente desde la UI.', req);
@@ -243,6 +270,7 @@ export class StudentsService {
       await this.notasRepository.save(newNota);
     }
 
+    student.en_analiticos = true;
     pushHistorial(student, `Nota manual cargada: ${asignatura} = ${notaNum}`, req);
     await this.studentsRepository.save(student);
 
@@ -273,4 +301,33 @@ export class StudentsService {
 
     return { success: true, message: "Notas eliminadas correctamente." };
   }
+
+  async moveToAnaliticos(id: string, req: any) {
+    const student = await this.studentsRepository.findOneBy({ id });
+    if (!student) throw new NotFoundException({ error: "Alumno no encontrado" });
+
+    student.en_analiticos = true;
+    pushHistorial(student, 'Alumno movido manualmente a la sección de Analíticos.', req);
+    await this.studentsRepository.save(student);
+
+    return { success: true, message: "Alumno movido a analíticos exitosamente." };
+  }
+
+  async clearPadron() {
+    // Delete students where en_analiticos is false AND they have no notes AND estado_analitico is borrador
+    // Because notes cascade, we can check if they have notes by using a query builder.
+    const result = await this.studentsRepository.createQueryBuilder('student')
+      .leftJoin('student.notas', 'nota')
+      .where('student.en_analiticos = :enAnaliticos', { enAnaliticos: false })
+      .andWhere('student.estado_analitico = :estado', { estado: 'borrador' })
+      .andWhere('nota.id IS NULL') // ensures no related notes exist
+      .delete()
+      .execute();
+
+    return { 
+      success: true, 
+      message: `Se han eliminado ${result.affected} registros del padrón que no tenían datos de analítico.` 
+    };
+  }
 }
+

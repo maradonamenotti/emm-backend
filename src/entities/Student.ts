@@ -9,6 +9,15 @@ export class Student {
     @Column()
     documento!: string;
 
+    @Column({ type: "int", nullable: true })
+    quinttos_id?: number;
+
+    @Column({ nullable: true })
+    matricula?: string;
+
+    @Column('simple-json', { nullable: true })
+    datos_extra?: any;
+
     @Column({ nullable: true })
     password?: string;
 
@@ -68,6 +77,9 @@ export class Student {
 
     @Column('simple-json', { nullable: true, default: [] })
     historial?: any[];
+
+    @Column({ default: false })
+    en_analiticos!: boolean;
 
     @OneToMany(() => Nota, nota => nota.student, { cascade: true })
     notas!: Nota[];

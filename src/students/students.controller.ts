@@ -23,6 +23,11 @@ export class StudentsController {
     return { success: true, data };
   }
 
+  @Delete('padron/clear')
+  async clearPadron() {
+    return this.studentsService.clearPadron();
+  }
+
   @Delete(':id')
   async remove(@Param('id') id: string) {
     return this.studentsService.remove(id);
@@ -67,5 +72,10 @@ export class StudentsController {
   @Delete(':id/notas')
   async removeAllNotas(@Param('id') id: string, @Req() req: any) {
     return this.studentsService.removeAllNotas(id, req);
+  }
+
+  @Put(':id/analiticos')
+  async moveToAnaliticos(@Param('id') id: string, @Req() req: any) {
+    return this.studentsService.moveToAnaliticos(id, req);
   }
 }

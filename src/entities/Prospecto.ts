@@ -60,6 +60,15 @@ export class Prospecto {
     @Column({ default: false })
     fue_alumno!: boolean;
 
+    @Column({ type: 'varchar', nullable: true })
+    ai_estado_sugerido?: string | null;
+
+    @Column({ type: 'varchar', nullable: true })
+    ai_curso_mencionado?: string | null;
+
+    @Column({ default: false })
+    ai_es_comprobante!: boolean;
+
     @CreateDateColumn({ type: 'timestamptz' })
     fecha_ingreso!: Date;
 
