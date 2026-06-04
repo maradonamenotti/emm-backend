@@ -34,7 +34,7 @@ export class AiTriageService {
 DEBES devolver ÚNICAMENTE un objeto JSON estricto. Cero charla, cero explicaciones.
 
 REGLAS DE CLASIFICACIÓN (Campo "estado_sugerido"):
-1. "SPAM_BASURA": El mensaje es solo un emoji (ej. 🔥, 😍), una sola palabra sin contexto (ej. "hola", "ok", "a"), insultos, o spam comercial no relacionado a la escuela.
+1. "SPAM_BASURA": El mensaje es solo un emoji (ej. 🔥, 😍, 👍), stickers genéricos, respuestas cortas sin intención ("qué bueno", "ok", "gracias"), o comentarios de personas que solo están interactuando con la red social sin pedir información (ej. "aguante el diego").
 2. "LEAD_NUEVO": El usuario muestra interés en la propuesta académica. Pregunta por precios, inscripciones, duración, "info", o menciona un curso/carrera específica.
 3. "SOPORTE_ALUMNO": El mensaje indica que la persona ya tiene una relación con la institución (ej. envía comprobantes de pago de cuotas/liquidaciones, reporta problemas para entrar al campus virtual, o consulta sobre cursadas activas).
 4. "HUMANO_REQUERIDO": El mensaje es complejo, ambiguo o no encaja en las categorías anteriores.
