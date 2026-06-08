@@ -342,6 +342,60 @@ export class WhatsAppService {
         return null;
     }
 
+    private extractLeadData(text: string, prospecto: Prospecto): boolean {
+        if (!text) return false;
+        let updated = false;
+
+        const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+        if (emailMatch) {
+            const extractedEmail = emailMatch[0].toLowerCase();
+            if (prospecto.email !== extractedEmail) {
+                prospecto.email = extractedEmail;
+                updated = true;
+            }
+        }
+
+        const cursosKeywords = [
+            { key: 'Entrenador', match: /entrenador/i },
+            { key: 'Preparador Físico', match: /preparador/i },
+            { key: 'Selecciones Nacionales', match: /selecciones/i },
+            { key: 'Facilitador', match: /facilitador/i },
+            { key: 'Arqueros', match: /arquero/i },
+            { key: 'Licencia C', match: /licencia c/i },
+            { key: 'Licencia B', match: /licencia b/i },
+            { key: 'Licencia A', match: /licencia a/i },
+            { key: 'Licencia PRO', match: /licencia pro/i },
+        ];
+
+        for (const c of cursosKeywords) {
+            if (c.match.test(text)) {
+                if (prospecto.curso_interes !== c.key) {
+                    prospecto.curso_interes = c.key;
+                    updated = true;
+                }
+                break;
+            }
+        }
+
+        // Si se extrajeron datos por regex pero el nombre sigue siendo WHATSAPP o usuario de meta
+        // Podríamos intentar sacar el nombre de las líneas previas al email si sigue el formato Nombre Apellido
+        if (updated && (prospecto.nombre === 'WHATSAPP' || prospecto.nombre.includes('USUARIO DE'))) {
+            const lines = text.split('\n');
+            const possibleName = lines.find(l => l.trim().length > 3 && l.trim().length < 30 && !l.includes('@'));
+            if (possibleName) {
+                const parts = possibleName.trim().split(/\s+/);
+                if (parts.length >= 2) {
+                    prospecto.nombre = parts.shift()!.toUpperCase();
+                    prospecto.apellido = parts.join(' ').toUpperCase();
+                } else {
+                    prospecto.nombre = parts[0].toUpperCase();
+                }
+            }
+        }
+
+        return updated;
+    }
+
     private async markAsReadMeta(senderId: string, pageId: string) {
         const token = this.getTokenForPage(pageId);
         if (!token) return;
@@ -463,6 +517,11 @@ export class WhatsAppService {
                             await this.prospectoRepo.save(prospecto);
                         }
 
+                        const dataUpdated = this.extractLeadData(text, prospecto);
+                        if (dataUpdated) {
+                            await this.prospectoRepo.save(prospecto);
+                        }
+
                         const message = this.mensajeRepo.create({
                             id_mensaje: incoming.id,
                             prospecto,
@@ -488,7 +547,7 @@ export class WhatsAppService {
                             prospecto,
                             text,
                             isNew,
-                            '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
+                            '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nPara enviarte toda la información, por favor respondé este mensaje con tu Nombre, Apellido, Email y el Curso o Carrera de tu interés 😊'
                         );
                     }
 
@@ -555,6 +614,11 @@ export class WhatsAppService {
                         await this.prospectoRepo.save(prospecto);
                     }
 
+                    const dataUpdated = this.extractLeadData(text, prospecto);
+                    if (dataUpdated) {
+                        await this.prospectoRepo.save(prospecto);
+                    }
+
                     const message = this.mensajeRepo.create({
                         id_mensaje: incomingMessage.mid,
                         prospecto,
@@ -583,14 +647,14 @@ export class WhatsAppService {
                             prospecto,
                             text,
                             false,
-                            '👋 ¡Hola! Gracias por tu mensaje. Si estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊⚽'
+                            '👋 ¡Hola! Gracias por tu mensaje. Para enviarte toda la información, por favor respondé este mensaje con tu Nombre, Apellido, Email y el Curso o Carrera de tu interés 😊⚽'
                         );
                     } else {
                         await this.processTriageAndAutoReply(
                             prospecto,
                             text,
                             isNew,
-                            '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nSi estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊'
+                            '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nPara enviarte toda la información, por favor respondé este mensaje con tu Nombre, Apellido, Email y el Curso o Carrera de tu interés 😊'
                         );
                     }
                 }
@@ -634,6 +698,11 @@ export class WhatsAppService {
                         await this.prospectoRepo.save(prospecto);
                     }
 
+                    const dataUpdated = this.extractLeadData(commentText, prospecto);
+                    if (dataUpdated) {
+                        await this.prospectoRepo.save(prospecto);
+                    }
+
                     const message = this.mensajeRepo.create({
                         id_mensaje: msgId,
                         prospecto,
@@ -659,7 +728,7 @@ export class WhatsAppService {
                         prospecto,
                         commentText,
                         isNew,
-                        '👋 ¡Hola! Gracias por tu comentario. Si estás interesado/a en alguna de nuestras carreras o cursos, dejanos tu nombre, teléfono y email y te contamos todo 😊⚽'
+                        '👋 ¡Hola! Gracias por tu comentario. Para enviarte toda la información, por favor respondé este mensaje con tu Nombre, Apellido, Email y el Curso o Carrera de tu interés 😊⚽'
                     );
                 }
             }

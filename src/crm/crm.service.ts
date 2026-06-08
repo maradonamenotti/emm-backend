@@ -203,6 +203,7 @@ export class CrmService {
     }
 
     // ─── PROSPECTOS ────────────────────────────────────────────────────
+
     async findAll(filters: { estado?: string; id_estado?: string; origen?: string; asignado_a?: string; curso?: string }) {
         const qb = this.prospectoRepo
             .createQueryBuilder('p')
