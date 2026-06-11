@@ -96,7 +96,7 @@ export class CrmController {
 
     @Post('prospectos/importar-excel')
     @UseInterceptors(FileInterceptor('file'))
-    async importarExcel(@UploadedFile() file: Express.Multer.File, @Body('curso') curso: string) {
+    async importarExcel(@UploadedFile() file: any, @Body('curso') curso: string) {
         return this.crmService.importarExcel(file.buffer, curso);
     }
 
