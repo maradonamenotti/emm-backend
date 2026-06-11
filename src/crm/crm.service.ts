@@ -267,7 +267,7 @@ export class CrmService {
         return this.prospectoRepo.save(p);
     }
 
-    async updateEstado(id: string, id_estado: string) {
+    async updateEstado(id: string, id_estado: string, motivo_perdida?: string) {
         const p = await this.prospectoRepo.findOneBy({ id });
         if (!p) throw new NotFoundException('Prospecto no encontrado');
         
@@ -279,6 +279,10 @@ export class CrmService {
             // Fallback for legacy string updates
             p.estado = id_estado;
         }
+
+        if (motivo_perdida !== undefined) {
+            p.motivo_perdida = motivo_perdida;
+        }
         
         return this.prospectoRepo.save(p);
     }
@@ -286,6 +290,82 @@ export class CrmService {
     async remove(id: string) {
         await this.prospectoRepo.delete({ id });
         return { success: true };
+    }
+
+    async limpiarFantasmas() {
+        const descartado = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Descartado' });
+        if (!descartado) throw new BadRequestException('Estado Descartado no encontrado');
+
+        const fantasmas = await this.prospectoRepo.createQueryBuilder('p')
+            .where('p.telefono IS NULL')
+            .andWhere('p.email IS NULL')
+            .andWhere('p.id_estado != :descartadoId', { descartadoId: descartado.id })
+            .getMany();
+
+        if (fantasmas.length === 0) return { count: 0 };
+
+        for (const p of fantasmas) {
+            p.id_estado = descartado.id;
+            p.estado = descartado.nombre;
+            p.motivo_perdida = 'Sin datos de contacto (Fantasma)';
+        }
+
+        await this.prospectoRepo.save(fantasmas);
+
+        return { count: fantasmas.length };
+    }
+
+    async importarExcel(fileBuffer: Buffer, curso_interes: string) {
+        if (!fileBuffer) throw new BadRequestException('No se recibió el archivo Excel');
+        
+        const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        
+        const rawData = XLSX.utils.sheet_to_json(sheet) as any[];
+        if (rawData.length === 0) throw new BadRequestException('El archivo Excel está vacío');
+
+        const estadoInicial = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Nuevo' }) 
+            || await this.estadoEmbudoRepo.findOneBy({ orden: 1 });
+
+        let count = 0;
+        for (const row of rawData) {
+            // Normalizar keys para encontrarlas fácilmente sin importar mayúsculas
+            const normalizedRow: any = {};
+            for (const key in row) {
+                normalizedRow[key.toLowerCase().trim()] = row[key];
+            }
+
+            const nombreCompleto = normalizedRow['nombre completo'] || normalizedRow['nombre'] || '';
+            const email = normalizedRow['email'] || normalizedRow['correo'] || normalizedRow['mail'];
+            const whatsappRaw = normalizedRow['whatsapp_number'] || normalizedRow['whatsapp'] || normalizedRow['telefono'] || normalizedRow['celular'];
+
+            if (!nombreCompleto && !whatsappRaw && !email) continue;
+
+            const partes = nombreCompleto.trim().split(' ');
+            const nombre = partes[0] || 'SIN NOMBRE';
+            const apellido = partes.slice(1).join(' ') || 'SIN APELLIDO';
+
+            const p = new Prospecto();
+            p.nombre = nombre.toUpperCase();
+            p.apellido = apellido.toUpperCase();
+            p.email = email ? String(email).trim().toLowerCase() : undefined;
+            p.telefono = whatsappRaw ? String(whatsappRaw).replace(/[^\d]/g, '') : undefined;
+            p.curso_interes = curso_interes || undefined;
+            p.origen = 'Importación Excel';
+            
+            if (estadoInicial) {
+                p.id_estado = estadoInicial.id;
+                p.estado = estadoInicial.nombre;
+            }
+
+            p.fecha_ingreso = new Date();
+            
+            await this.prospectoRepo.save(p);
+            count++;
+        }
+
+        return { success: true, count, message: `Se importaron ${count} prospectos correctamente.` };
     }
 
     // ─── HISTORIAL ─────────────────────────────────────────────────────
@@ -350,6 +430,16 @@ export class CrmService {
         `);
         const noLeidosChatsCount = noLeidosChatsRes[0]?.count || 0;
 
+        const motivosMap = new Map<string, number>();
+        for (const p of prospectos) {
+            if (p.id_estado && perdidosIds.includes(p.id_estado) && p.motivo_perdida) {
+                motivosMap.set(p.motivo_perdida, (motivosMap.get(p.motivo_perdida) || 0) + 1);
+            }
+        }
+        const motivosPerdida = Array.from(motivosMap.entries())
+            .map(([motivo, count]) => ({ motivo, count }))
+            .sort((a, b) => b.count - a.count);
+
         return {
             total,
             inscriptos,
@@ -358,6 +448,7 @@ export class CrmService {
             tasaConversion,
             porEstado,
             porOrigen,
+            motivosPerdida,
             noLeidosChatsCount,
             alertasSeguimiento: alertas.map(h => ({
                 id: h.id,

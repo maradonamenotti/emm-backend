@@ -150,7 +150,7 @@ export class WhatsAppService {
         return new Date(ts);
     }
 
-    async getOrCreateProspectoForPlatform(senderId: string, platform: 'Facebook' | 'Instagram', whatsapp_id: string, recipientPageId: string) {
+    async getOrCreateProspectoForPlatform(senderId: string, platform: 'Facebook' | 'Instagram', whatsapp_id: string, recipientPageId: string, origenEspecifico?: string) {
         let promise = this.platformLocks.get(whatsapp_id);
         if (!promise) {
             promise = (async () => {
@@ -200,7 +200,7 @@ export class WhatsAppService {
                     nombre,
                     apellido,
                     whatsapp_id,
-                    origen: platform,
+                    origen: origenEspecifico || platform,
                     estado: 'Nuevo',
                     fue_alumno: false,
                 });
@@ -603,8 +603,14 @@ export class WhatsAppService {
                     const fecha = this.parseTimestamp(msgEvent.timestamp);
                     const platform = objectType === 'page' ? 'Facebook' : 'Instagram';
                     const whatsapp_id = `${platform.toLowerCase()}:${senderId}:${recipientPageId}`;
+                    const isStoryReply = incomingMessage.referral?.source_type === 'STORY' || msgEvent.referral?.source_type === 'STORY';
+                    
+                    let origenEspecifico = platform;
+                    if (platform === 'Instagram') {
+                        origenEspecifico = isStoryReply ? 'Instagram - Historia' : 'Instagram - Mensaje';
+                    }
 
-                    const { prospecto, isNew } = await this.getOrCreateProspectoForPlatform(senderId, platform, whatsapp_id, recipientPageId);
+                    const { prospecto, isNew } = await this.getOrCreateProspectoForPlatform(senderId, platform, whatsapp_id, recipientPageId, origenEspecifico);
 
                     const extractedName = this.extractNameFromText(text);
                     if (extractedName && (prospecto.nombre.includes('USUARIO DE') || prospecto.apellido === 'INSTAGRAM' || prospecto.apellido === 'USER' || prospecto.apellido === senderId)) {
@@ -639,8 +645,6 @@ export class WhatsAppService {
                         mensaje: this.serializeMessage(message),
                     };
                     this.gateway.emit('whatsapp:message', payload);
-
-                    const isStoryReply = incomingMessage.referral?.source_type === 'STORY' || msgEvent.referral?.source_type === 'STORY';
 
                     if (isStoryReply && text && text !== '[Mensaje multimedia o adjunto]') {
                         await this.processTriageAndAutoReply(
@@ -686,8 +690,10 @@ export class WhatsAppService {
                     const fecha = this.parseTimestamp(entry.time || Date.now());
                     const platform = objectType === 'page' ? 'Facebook' : 'Instagram';
                     const whatsapp_id = `${platform.toLowerCase()}:${senderId}:${recipientPageId}`;
+                    
+                    const origenEspecifico = platform === 'Instagram' ? 'Instagram - Comentario' : platform;
 
-                    const { prospecto, isNew } = await this.getOrCreateProspectoForPlatform(senderId, platform, whatsapp_id, recipientPageId);
+                    const { prospecto, isNew } = await this.getOrCreateProspectoForPlatform(senderId, platform, whatsapp_id, recipientPageId, origenEspecifico);
                     
                     const commentText = `[Comentario] ${text}`;
 

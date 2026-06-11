@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Put, Patch, Delete, Body, Param, Query, Res } from '@nestjs/common';
+import { Controller, Get, Post, Put, Patch, Delete, Body, Param, Query, Res, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { CrmService } from './crm.service';
 
@@ -88,6 +89,17 @@ export class CrmController {
         return this.crmService.create(body);
     }
 
+    @Post('prospectos/limpiar-fantasmas')
+    async limpiarFantasmas() {
+        return this.crmService.limpiarFantasmas();
+    }
+
+    @Post('prospectos/importar-excel')
+    @UseInterceptors(FileInterceptor('file'))
+    async importarExcel(@UploadedFile() file: Express.Multer.File, @Body('curso') curso: string) {
+        return this.crmService.importarExcel(file.buffer, curso);
+    }
+
     @Get('prospectos/:id')
     async findOne(@Param('id') id: string) {
         return this.crmService.findOne(id);
@@ -99,8 +111,8 @@ export class CrmController {
     }
 
     @Patch('prospectos/:id/estado')
-    async updateEstado(@Param('id') id: string, @Body() body: { estado: string }) {
-        return this.crmService.updateEstado(id, body.estado);
+    async updateEstado(@Param('id') id: string, @Body() body: { estado: string, motivo_perdida?: string }) {
+        return this.crmService.updateEstado(id, body.estado, body.motivo_perdida);
     }
 
     @Delete('prospectos/:id')

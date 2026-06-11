@@ -75,6 +75,9 @@ export class Prospecto {
     @Column({ nullable: true, type: 'text' })
     notas_generales?: string;
 
+    @Column({ nullable: true, type: 'text' })
+    motivo_perdida?: string;
+
     @OneToMany(() => HistorialSeguimiento, h => h.prospecto, { cascade: true, eager: false })
     historial!: HistorialSeguimiento[];
 }

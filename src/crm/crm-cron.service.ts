@@ -68,11 +68,59 @@ export class CrmCronService {
     }
 
     /**
+     * Tarea: Limpieza de Fantasmas (Contactos sin datos) (Cada día a las 4 AM)
+     */
+    @Cron(CronExpression.EVERY_DAY_AT_4AM)
+    async handleLimpiezaFantasmas() {
+        this.logger.log('Iniciando limpieza automática de prospectos fantasma...');
+        
+        const estadoDescartado = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Descartado' });
+        if (!estadoDescartado) return;
+
+        const limite = new Date();
+        limite.setDate(limite.getDate() - 1); // 24 horas de gracia para que contesten
+
+        const fantasmas = await this.prospectoRepo
+            .createQueryBuilder('p')
+            .where('p.telefono IS NULL')
+            .andWhere('p.email IS NULL')
+            .andWhere('p.id_estado != :descartadoId', { descartadoId: estadoDescartado.id })
+            .andWhere('p.fecha_ingreso <= :limite', { limite })
+            .getMany();
+
+        if (fantasmas.length > 0) {
+            for (const p of fantasmas) {
+                this.logger.log(`Auto-descartando fantasma ${p.nombre} ${p.apellido}.`);
+                p.id_estado = estadoDescartado.id;
+                p.estado = estadoDescartado.nombre;
+                p.motivo_perdida = 'Sin datos de contacto (Fantasma)';
+                await this.prospectoRepo.save(p);
+
+                await this.historialRepo.save({
+                    prospecto_id: p.id,
+                    tipo_contacto: 'Sistema',
+                    nota: 'Descartado automáticamente por no proveer datos de contacto (teléfono o email) después de 24 horas.',
+                    fecha_contacto: new Date(),
+                });
+            }
+        }
+        
+        this.logger.log(`Limpieza de fantasmas completada. Se descartaron ${fantasmas.length} prospectos.`);
+    }
+
+    /**
      * Tarea: Seguimiento automático (Cada hora)
      */
     @Cron(CronExpression.EVERY_HOUR)
     async handleSeguimientoAutomatico() {
         this.logger.log('Verificando seguimientos automáticos dinámicos...');
+
+        // Solo enviar recordatorios automáticos en horario comercial (9 a 20 hs) para no parecer un robot de madrugada
+        const currentHour = new Date().getHours();
+        if (currentHour < 9 || currentHour >= 20) {
+            this.logger.log('Fuera de horario comercial. Se posponen los seguimientos automáticos hasta las 9 AM.');
+            return;
+        }
 
         // Buscamos estados con recordatorio configurado
         const estadosConRecordatorio = await this.estadoEmbudoRepo.find({
