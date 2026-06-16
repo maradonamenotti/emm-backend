@@ -77,20 +77,27 @@ export class CrmCronService {
         const estadoDescartado = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Descartado' });
         if (!estadoDescartado) return;
 
-        const limite = new Date();
-        limite.setDate(limite.getDate() - 1); // 24 horas de gracia para que contesten
+        const limiteGeneral = new Date();
+        limiteGeneral.setDate(limiteGeneral.getDate() - 1); // 24 horas de gracia general
+
+        const limiteComentarios = new Date();
+        limiteComentarios.setHours(limiteComentarios.getHours() - 12); // 12 horas de gracia para comentarios de Instagram/Facebook
 
         const fantasmas = await this.prospectoRepo
             .createQueryBuilder('p')
             .where('p.telefono IS NULL')
             .andWhere('p.email IS NULL')
             .andWhere('p.id_estado != :descartadoId', { descartadoId: estadoDescartado.id })
-            .andWhere('p.fecha_ingreso <= :limite', { limite })
+            .andWhere(
+                `((p.origen IN ('Instagram - Comentario', 'Facebook') AND p.fecha_ingreso <= :limiteComentarios) OR 
+                  (p.origen NOT IN ('Instagram - Comentario', 'Facebook') AND p.fecha_ingreso <= :limiteGeneral))`
+            )
+            .setParameters({ limiteGeneral, limiteComentarios })
             .getMany();
 
         if (fantasmas.length > 0) {
             for (const p of fantasmas) {
-                this.logger.log(`Auto-descartando fantasma ${p.nombre} ${p.apellido}.`);
+                this.logger.log(`Auto-descartando fantasma ${p.nombre} ${p.apellido} (Origen: ${p.origen}).`);
                 p.id_estado = estadoDescartado.id;
                 p.estado = estadoDescartado.nombre;
                 p.motivo_perdida = 'Sin datos de contacto (Fantasma)';
@@ -99,7 +106,7 @@ export class CrmCronService {
                 await this.historialRepo.save({
                     prospecto_id: p.id,
                     tipo_contacto: 'Sistema',
-                    nota: 'Descartado automáticamente por no proveer datos de contacto (teléfono o email) después de 24 horas.',
+                    nota: `Descartado automáticamente por no proveer datos de contacto después de ${p.origen?.includes('Comentario') ? '12' : '24'} horas.`,
                     fecha_contacto: new Date(),
                 });
             }
