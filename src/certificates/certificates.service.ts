@@ -4,7 +4,7 @@ import { Repository } from 'typeorm';
 import { Student } from '../entities/Student';
 import { SUBJECTS_BY_LICENSE } from '../config/subjects';
 import { normalizeSubjectName, getDocsPath, cleanDNI, stripAccents, parseExcelBuffer } from '../common/helpers';
-import { StudentGradeLog, generateCertificate, generateDiploma, generateActualizacionDiploma } from './pdfGenerator';
+import { StudentGradeLog, generateCertificate, generateDiploma, generateActualizacionDiploma, generateSeleccionesDiploma } from './pdfGenerator';
 import { loadCertificateTemplate } from './certificateTemplate';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -30,7 +30,7 @@ export class CertificatesService {
     }
 
     const lic = (student.carrera_licencia || 'CB').toUpperCase().replace('LICENCIA ', '').trim();
-    if (lic !== 'ACTUALIZACION') {
+    if (lic !== 'ACTUALIZACION' && lic !== 'SELECCIONES_NACIONALES') {
         const required = SUBJECTS_BY_LICENSE[lic] || [];
         for (const sub of required) {
             const normReq = normalizeSubjectName(sub);
@@ -210,16 +210,16 @@ export class CertificatesService {
     if (!student) throw new NotFoundException({ error: "Alumno no encontrado" });
     const lic = (student.carrera_licencia || 'CB').toUpperCase();
 
-    if (lic !== 'ACTUALIZACION' && (!student.notas || student.notas.length === 0)) {
+    if (lic !== 'ACTUALIZACION' && lic !== 'SELECCIONES_NACIONALES' && (!student.notas || student.notas.length === 0)) {
         throw new BadRequestException({ error: "Alumno sin notas: no se puede emitir diploma." });
     }
 
     const nacionalidadNormalizada = String(student.nacionalidad ?? '').trim().toUpperCase();
-    if (!nacionalidadNormalizada) {
+    if (lic !== 'SELECCIONES_NACIONALES' && !nacionalidadNormalizada) {
         throw new BadRequestException({ error: "Requisitos no cumplidos", message: "La nacionalidad es obligatoria para emitir el diploma." });
     }
 
-    if (lic !== 'ACTUALIZACION') {
+    if (lic !== 'ACTUALIZACION' && lic !== 'SELECCIONES_NACIONALES') {
         const required = SUBJECTS_BY_LICENSE[lic] || [];
         for (const sub of required) {
             const normReq = normalizeSubjectName(sub);
@@ -239,6 +239,7 @@ export class CertificatesService {
 
     let templateName = `DIPLOMA_LICENCIA_CB_MM.pdf`;
     if (lic === 'ACTUALIZACION') templateName = `DIPLOMA_ACTUALIZACION_LIC.pdf`;
+    else if (lic === 'SELECCIONES_NACIONALES') templateName = `DIPLOMA_SELECCIONES_NACIONALES.pdf`;
     const templatePath = path.join(getDocsPath(), templateName);
 
     if (!fs.existsSync(templatePath)) {
@@ -246,9 +247,15 @@ export class CertificatesService {
     }
 
     const templateBuffer = fs.readFileSync(templatePath);
-    const diplomaBuffer = lic === 'ACTUALIZACION'
-        ? await generateActualizacionDiploma({ nombre: student.nombre, apellido: student.apellido, nacionalidad: student.nacionalidad, documento: student.documento, fecha_emision: student.fecha_emision }, templateBuffer)
-        : await generateDiploma({ nombre: student.nombre, apellido: student.apellido, nacionalidad: student.nacionalidad, documento: student.documento, fecha_emision: student.fecha_emision, carrera_licencia: lic }, templateBuffer);
+    let diplomaBuffer: Buffer;
+    
+    if (lic === 'ACTUALIZACION') {
+        diplomaBuffer = await generateActualizacionDiploma({ nombre: student.nombre, apellido: student.apellido, nacionalidad: student.nacionalidad, documento: student.documento, fecha_emision: student.fecha_emision }, templateBuffer);
+    } else if (lic === 'SELECCIONES_NACIONALES') {
+        diplomaBuffer = await generateSeleccionesDiploma({ nombre: student.nombre, apellido: student.apellido, fecha_emision: student.fecha_emision }, templateBuffer);
+    } else {
+        diplomaBuffer = await generateDiploma({ nombre: student.nombre, apellido: student.apellido, nacionalidad: student.nacionalidad, documento: student.documento, fecha_emision: student.fecha_emision, carrera_licencia: lic }, templateBuffer);
+    }
 
     student.diploma_emitido = true;
     await this.studentRepo.save(student);
@@ -264,6 +271,7 @@ export class CertificatesService {
     let cleanLic = student.carrera_licencia ? String(student.carrera_licencia).toUpperCase().replace('LICENCIA ', '').trim() : 'CB';
     let templateName = `DIPLOMA_LICENCIA_CB_MM.pdf`;
     if (cleanLic === 'ACTUALIZACION') templateName = `DIPLOMA_ACTUALIZACION_LIC.pdf`;
+    else if (cleanLic === 'SELECCIONES_NACIONALES') templateName = `DIPLOMA_SELECCIONES_NACIONALES.pdf`;
     const templatePath = path.join(getDocsPath(), templateName);
 
     if (!fs.existsSync(templatePath)) {
@@ -271,9 +279,15 @@ export class CertificatesService {
     }
 
     const templateBuffer = fs.readFileSync(templatePath);
-    const diplomaBuf = cleanLic === 'ACTUALIZACION'
-        ? await generateActualizacionDiploma({ nombre: student.nombre, apellido: student.apellido, nacionalidad: student.nacionalidad, documento: student.documento, fecha_emision: student.fecha_emision }, templateBuffer)
-        : await generateDiploma({ nombre: student.nombre, apellido: student.apellido, nacionalidad: student.nacionalidad, documento: student.documento, fecha_emision: student.fecha_emision, carrera_licencia: cleanLic }, templateBuffer);
+    let diplomaBuf: Buffer;
+    
+    if (cleanLic === 'ACTUALIZACION') {
+        diplomaBuf = await generateActualizacionDiploma({ nombre: student.nombre, apellido: student.apellido, nacionalidad: student.nacionalidad, documento: student.documento, fecha_emision: student.fecha_emision }, templateBuffer);
+    } else if (cleanLic === 'SELECCIONES_NACIONALES') {
+        diplomaBuf = await generateSeleccionesDiploma({ nombre: student.nombre, apellido: student.apellido, fecha_emision: student.fecha_emision }, templateBuffer);
+    } else {
+        diplomaBuf = await generateDiploma({ nombre: student.nombre, apellido: student.apellido, nacionalidad: student.nacionalidad, documento: student.documento, fecha_emision: student.fecha_emision, carrera_licencia: cleanLic }, templateBuffer);
+    }
 
     const safeApellido = stripAccents(student.apellido).replace(/\s+/g, '_');
     return { buffer: diplomaBuf, filename: `Diploma_${safeApellido}.pdf` };

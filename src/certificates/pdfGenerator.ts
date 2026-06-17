@@ -480,3 +480,41 @@ export async function generateActualizacionDiploma(
 
     return Buffer.from(await pdfDoc.save());
 }
+
+export async function generateSeleccionesDiploma(
+    student: { nombre: string; apellido?: string; fecha_emision?: string },
+    pdfTemplateBuffer: Buffer
+): Promise<Buffer> {
+    const pdfDoc = await PDFDocument.load(pdfTemplateBuffer);
+    const form = pdfDoc.getForm();
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    
+    // El PDF tiene los campos: Texto1, Texto2, Texto3
+    // Texto1 y Texto2 llevan el Nombre y Apellido
+    // Texto3 lleva la Fecha
+    
+    const fullName = getFullName(student.nombre, student.apellido);
+    const fecha = parseDateStrings(student.fecha_emision || new Date().toISOString().split('T')[0]);
+    const fechaTexto = fecha
+        ? `${fecha.day} DE ${fecha.month} DE ${fecha.year}`
+        : new Date().toLocaleDateString('es-AR');
+
+    const setField = (name: string, value: string, fontSize?: number, alignCenter = true) => {
+        try {
+            const field = form.getTextField(name);
+            field.setText(value);
+            if (fontSize) field.setFontSize(fontSize);
+            if (alignCenter) field.setAlignment(TextAlignment.Center);
+            field.updateAppearances(boldFont);
+        } catch (e) { }
+    };
+
+    const nameSize = fullName.length > 34 ? 24 : fullName.length > 28 ? 28 : 32;
+    setField('Texto1', fullName, nameSize);
+    setField('Texto2', fullName, nameSize);
+    setField('Texto3', fechaTexto, 16);
+
+    try { form.getFields().forEach(f => { try { f.enableReadOnly(); } catch (e) { } }); } catch (e) { }
+
+    return Buffer.from(await pdfDoc.save());
+}
