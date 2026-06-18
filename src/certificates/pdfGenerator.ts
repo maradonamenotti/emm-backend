@@ -510,7 +510,7 @@ export async function generateSeleccionesDiploma(
     };
 
     const nameSize = fullName.length > 34 ? 24 : fullName.length > 28 ? 28 : 32;
-    setField('Texto1', fullName, nameSize);
+    setField('Texto1', 'SELECCIONES NACIONALES', 32);
     setField('Texto2', fullName, nameSize);
     setField('Texto3', fechaTexto, 16);
 
