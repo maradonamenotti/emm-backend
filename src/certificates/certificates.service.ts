@@ -29,7 +29,10 @@ export class CertificatesService {
       throw new BadRequestException({ error: "Alumno sin notas: no se puede emitir analítico." });
     }
 
-    const lic = (student.carrera_licencia || 'CB').toUpperCase().replace('LICENCIA ', '').trim();
+    const licRaw = (student.carrera_licencia || 'CB').toUpperCase().replace('LICENCIA ', '').trim();
+    const isSelecciones = licRaw === 'SELECCIONES_NACIONALES' || licRaw.includes('SELECCIONES');
+    const isAct = licRaw === 'ACTUALIZACION' || licRaw.includes('ACTUALIZACION');
+    const lic = isSelecciones ? 'SELECCIONES_NACIONALES' : (isAct ? 'ACTUALIZACION' : licRaw);
     if (lic !== 'ACTUALIZACION' && lic !== 'SELECCIONES_NACIONALES') {
         const required = SUBJECTS_BY_LICENSE[lic] || [];
         for (const sub of required) {
@@ -208,7 +211,10 @@ export class CertificatesService {
     });
 
     if (!student) throw new NotFoundException({ error: "Alumno no encontrado" });
-    const lic = (student.carrera_licencia || 'CB').toUpperCase();
+    const licRaw = (student.carrera_licencia || 'CB').toUpperCase();
+    const isSelecciones = licRaw === 'SELECCIONES_NACIONALES' || licRaw.includes('SELECCIONES');
+    const isAct = licRaw === 'ACTUALIZACION' || licRaw.includes('ACTUALIZACION');
+    const lic = isSelecciones ? 'SELECCIONES_NACIONALES' : (isAct ? 'ACTUALIZACION' : licRaw);
 
     if (lic !== 'ACTUALIZACION' && lic !== 'SELECCIONES_NACIONALES' && (!student.notas || student.notas.length === 0)) {
         throw new BadRequestException({ error: "Alumno sin notas: no se puede emitir diploma." });
@@ -268,7 +274,10 @@ export class CertificatesService {
     const student = await this.studentRepo.findOneBy({ id });
     if (!student) throw new NotFoundException({ error: "Alumno no encontrado" });
 
-    let cleanLic = student.carrera_licencia ? String(student.carrera_licencia).toUpperCase().replace('LICENCIA ', '').trim() : 'CB';
+    let cleanLicRaw = student.carrera_licencia ? String(student.carrera_licencia).toUpperCase().replace('LICENCIA ', '').trim() : 'CB';
+    const isSelecciones = cleanLicRaw === 'SELECCIONES_NACIONALES' || cleanLicRaw.includes('SELECCIONES');
+    const isAct = cleanLicRaw === 'ACTUALIZACION' || cleanLicRaw.includes('ACTUALIZACION');
+    let cleanLic = isSelecciones ? 'SELECCIONES_NACIONALES' : (isAct ? 'ACTUALIZACION' : cleanLicRaw);
     let templateName = `DIPLOMA_LICENCIA_CB_MM.pdf`;
     if (cleanLic === 'ACTUALIZACION') templateName = `DIPLOMA_ACTUALIZACION_LIC.pdf`;
     else if (cleanLic === 'SELECCIONES_NACIONALES') templateName = `DIPLOMA_SELECCIONES_NACIONALES.pdf`;

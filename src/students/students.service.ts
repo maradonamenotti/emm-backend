@@ -150,9 +150,12 @@ export class StudentsService implements OnModuleInit {
       if (!studentWithNotas.documentacion_ok) throw new BadRequestException({ error: "Requisitos no cumplidos", message: "No se puede emitir: falta validar la documentacion." });
       if (!studentWithNotas.fecha_fin_cursada) throw new BadRequestException({ error: "Requisitos no cumplidos", message: "No se puede emitir: falta cargar la fecha de fin de cursada." });
 
-      const lic = (studentWithNotas.carrera_licencia || 'CB').toUpperCase().replace('LICENCIA ', '').trim();
-      if (lic !== 'ACTUALIZACION') {
-        const required = SUBJECTS_BY_LICENSE[lic] || [];
+      const licRaw = (studentWithNotas.carrera_licencia || 'CB').toUpperCase().replace('LICENCIA ', '').trim();
+      const isSelecciones = licRaw === 'SELECCIONES_NACIONALES' || licRaw.includes('SELECCIONES');
+      const isAct = licRaw === 'ACTUALIZACION' || licRaw.includes('ACTUALIZACION');
+      
+      if (!isAct && !isSelecciones) {
+        const required = SUBJECTS_BY_LICENSE[licRaw] || [];
         for (const sub of required) {
           const normReq = normalizeSubjectName(sub);
           const nota = studentWithNotas.notas?.find(n => normalizeSubjectName(n.asignatura) === normReq);
