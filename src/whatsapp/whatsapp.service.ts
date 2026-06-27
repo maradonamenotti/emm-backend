@@ -455,6 +455,17 @@ export class WhatsAppService {
             }
         }
 
+        // Si es Facebook o Instagram, no enviamos respuestas automáticas por el momento (hasta que Meta valide la App)
+        const channel = (prospecto.whatsapp_id && prospecto.whatsapp_id.startsWith('facebook:'))
+            ? 'Facebook'
+            : (prospecto.whatsapp_id && prospecto.whatsapp_id.startsWith('instagram:'))
+            ? 'Instagram'
+            : 'WhatsApp';
+
+        if (channel === 'Facebook' || channel === 'Instagram') {
+            return;
+        }
+
         let autoReplied = false;
         if (triageResult && !isSpam) {
             const query = this.plantillaRepo.createQueryBuilder('p')
@@ -547,7 +558,7 @@ export class WhatsAppService {
                             prospecto,
                             text,
                             isNew,
-                            '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nPara enviarte toda la información, por favor respondé este mensaje con tu Nombre, Apellido, Email y el Curso o Carrera de tu interés 😊'
+                            '👋 ¡Hola! Gracias por escribirnos y por tu interés en Escuela Maradona Menotti.\n\nPara enviarte la información correspondiente, por favor respondé este mensaje indicando:\n\n⚽ Propuesta de interés:\n* Carrera de Entrenador/a de Fútbol Profesional\n* Licencia B de Preparación Física Específica en Fútbol\n* Cursos y Especializaciones\n\n📌 Nombre y Apellido:\n📌 Email:\n📌 País de residencia:\n\nCon esos datos podremos compartirte toda la información de manera personalizada. 😊'
                         );
                     }
 
@@ -579,7 +590,8 @@ export class WhatsAppService {
                     const isReaction = msgEvent.reaction || isStoryMention;
 
                     if (isReaction) {
-                        await this.markAsReadMeta(senderId, recipientPageId);
+                        // El usuario solicitó expresamente que no se marquen los mensajes como leídos en Facebook/Instagram.
+                        // await this.markAsReadMeta(senderId, recipientPageId);
                         continue; // No procesamos como mensaje entrante de texto
                     }
 
@@ -651,14 +663,14 @@ export class WhatsAppService {
                             prospecto,
                             text,
                             false,
-                            '👋 ¡Hola! Gracias por tu mensaje. Para enviarte toda la información, por favor respondé este mensaje con tu Nombre, Apellido, Email y el Curso o Carrera de tu interés 😊⚽'
+                            '👋 ¡Hola! Gracias por escribirnos y por tu interés en Escuela Maradona Menotti.\n\nPara enviarte la información correspondiente, por favor respondé este mensaje indicando:\n\n⚽ Propuesta de interés:\n* Carrera de Entrenador/a de Fútbol Profesional\n* Licencia B de Preparación Física Específica en Fútbol\n* Cursos y Especializaciones\n\n📌 Nombre y Apellido:\n📌 Email:\n📌 País de residencia:\n\nCon esos datos podremos compartirte toda la información de manera personalizada. 😊'
                         );
                     } else {
                         await this.processTriageAndAutoReply(
                             prospecto,
                             text,
                             isNew,
-                            '👋 ¡Hola! Bienvenido/a a Maradona Menotti. Gracias por escribirnos ⚽🏆\nPara enviarte toda la información, por favor respondé este mensaje con tu Nombre, Apellido, Email y el Curso o Carrera de tu interés 😊'
+                            '👋 ¡Hola! Gracias por escribirnos y por tu interés en Escuela Maradona Menotti.\n\nPara enviarte la información correspondiente, por favor respondé este mensaje indicando:\n\n⚽ Propuesta de interés:\n* Carrera de Entrenador/a de Fútbol Profesional\n* Licencia B de Preparación Física Específica en Fútbol\n* Cursos y Especializaciones\n\n📌 Nombre y Apellido:\n📌 Email:\n📌 País de residencia:\n\nCon esos datos podremos compartirte toda la información de manera personalizada. 😊'
                         );
                     }
                 }
@@ -734,7 +746,7 @@ export class WhatsAppService {
                         prospecto,
                         commentText,
                         isNew,
-                        '👋 ¡Hola! Gracias por tu comentario. Para enviarte toda la información, por favor respondé este mensaje con tu Nombre, Apellido, Email y el Curso o Carrera de tu interés 😊⚽'
+                        '👋 ¡Hola! Gracias por escribirnos y por tu interés en Escuela Maradona Menotti.\n\nPara enviarte la información correspondiente, por favor respondé este mensaje indicando:\n\n⚽ Propuesta de interés:\n* Carrera de Entrenador/a de Fútbol Profesional\n* Licencia B de Preparación Física Específica en Fútbol\n* Cursos y Especializaciones\n\n📌 Nombre y Apellido:\n📌 Email:\n📌 País de residencia:\n\nCon esos datos podremos compartirte toda la información de manera personalizada. 😊'
                     );
                 }
             }
