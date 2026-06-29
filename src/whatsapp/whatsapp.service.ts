@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { LessThan, Repository } from 'typeorm';
 import { Prospecto } from '../entities/Prospecto';
@@ -8,6 +8,11 @@ import { CrmPlantilla } from '../entities/CrmPlantilla';
 import { Student } from '../entities/Student';
 import { WhatsAppGateway } from './whatsapp.gateway';
 import { AiTriageService } from './ai-triage.service';
+import * as fs from 'fs';
+import * as path from 'path';
+
+// @ts-ignore
+import { Client, LocalAuth } from 'whatsapp-web.js';
 
 export interface SerializedMessage {
     id_mensaje: string;
@@ -30,9 +35,12 @@ interface MessageQueryOptions {
 }
 
 @Injectable()
-export class WhatsAppService {
+export class WhatsAppService implements OnModuleInit {
     private platformLocks = new Map<string, Promise<{ prospecto: Prospecto; isNew: boolean }>>();
     private whatsappLocks = new Map<string, Promise<{ prospecto: Prospecto; isNew: boolean }>>();
+    private client!: Client;
+    private isClientReady = false;
+    private lastQr: string | null = null;
 
     constructor(
         @InjectRepository(Prospecto, 'crm')
@@ -48,6 +56,168 @@ export class WhatsAppService {
         private readonly gateway: WhatsAppGateway,
         private readonly aiTriageService: AiTriageService,
     ) {}
+
+    onModuleInit() {
+        this.initializeClient();
+    }
+
+    private initializeClient() {
+        console.log('Initializing WhatsApp Web client...');
+        this.client = new Client({
+            authStrategy: new LocalAuth({ dataPath: './wwebjs_auth' }),
+            puppeteer: {
+                headless: true,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ],
+            }
+        });
+
+        this.client.on('qr', (qr: string) => {
+            console.log('WhatsApp QR Code received.');
+            this.lastQr = qr;
+            this.isClientReady = false;
+            this.gateway.emit('whatsapp:qr', qr);
+        });
+
+        this.client.on('ready', () => {
+            console.log('WhatsApp Web client is ready!');
+            this.isClientReady = true;
+            this.lastQr = null;
+            this.gateway.emit('whatsapp:status', { status: 'ready' });
+        });
+
+        this.client.on('disconnected', (reason: string) => {
+            console.log('WhatsApp Web client disconnected:', reason);
+            this.isClientReady = false;
+            this.lastQr = null;
+            this.gateway.emit('whatsapp:status', { status: 'disconnected' });
+            
+            // Attempt to destroy and re-initialize
+            try {
+                this.client.destroy().catch(() => {});
+            } catch (e) {}
+            this.initializeClient();
+        });
+
+        this.client.on('message_create', async (msg: any) => {
+            if (msg.fromMe) {
+                await this.handleOutgoingMessageFromPhone(msg);
+            } else {
+                await this.handleIncomingMessage(msg);
+            }
+        });
+
+        this.client.initialize().catch((err: any) => {
+            console.error('Error during WhatsApp Web client initialization:', err);
+        });
+    }
+
+    private async handleOutgoingMessageFromPhone(msg: any) {
+        if (msg.to.endsWith('@g.us')) return;
+        const jid = msg.to;
+        const telefono = this.normalizePhone(jid.split('@')[0]);
+
+        const { prospecto } = await this.getOrCreateProspecto(telefono, 'WHATSAPP', jid);
+        const fecha = new Date(msg.timestamp * 1000);
+        let text = msg.body || '';
+        if (msg.hasMedia) {
+            text = `[Adjunto o Multimedia]`;
+        }
+
+        // Avoid duplication if the message is already saved (e.g. sent from our CRM)
+        const existing = await this.mensajeRepo.findOneBy({ id_mensaje: msg.id.id });
+        if (existing) return;
+
+        const message = this.mensajeRepo.create({
+            id_mensaje: msg.id.id,
+            prospecto,
+            id_prospecto: prospecto.id,
+            direccion: 'saliente',
+            cuerpo_mensaje: text,
+            fecha_envio: fecha,
+            estado_lectura: 'Leido',
+        });
+        await this.mensajeRepo.save(message);
+
+        // Update last message status
+        prospecto.fecha_ultimo_mensaje_cliente = fecha;
+        await this.prospectoRepo.save(prospecto);
+
+        this.gateway.emit('whatsapp:message', {
+            prospecto: await this.serializeConversation(prospecto),
+            mensaje: this.serializeMessage(message),
+        });
+    }
+
+    private async handleIncomingMessage(msg: any) {
+        if (msg.from.endsWith('@g.us')) return;
+        const jid = msg.from;
+        const telefono = this.normalizePhone(jid.split('@')[0]);
+
+        let displayName = 'WHATSAPP';
+        try {
+            const contact = await msg.getContact();
+            displayName = contact.pushname || contact.name || 'WHATSAPP';
+        } catch (e) {
+            console.error('Error fetching contact info:', e);
+        }
+
+        const { prospecto, isNew } = await this.getOrCreateProspecto(telefono, displayName, jid);
+        const fecha = new Date(msg.timestamp * 1000);
+        let text = msg.body || '';
+
+        if (msg.hasMedia) {
+            text = `[Mensaje multimedia o adjunto]`;
+        }
+
+        const extractedName = this.extractNameFromText(text);
+        if (extractedName && (prospecto.nombre === 'WHATSAPP' || prospecto.nombre.includes('USUARIO DE'))) {
+            const parts = extractedName.split(/\s+/);
+            prospecto.nombre = (parts.shift() || 'WHATSAPP').toUpperCase();
+            prospecto.apellido = (parts.join(' ') || 'SIN APELLIDO').toUpperCase();
+            await this.prospectoRepo.save(prospecto);
+        }
+
+        const dataUpdated = this.extractLeadData(text, prospecto);
+        if (dataUpdated) {
+            await this.prospectoRepo.save(prospecto);
+        }
+
+        const message = this.mensajeRepo.create({
+            id_mensaje: msg.id.id,
+            prospecto,
+            id_prospecto: prospecto.id,
+            direccion: 'entrante',
+            cuerpo_mensaje: text,
+            fecha_envio: fecha,
+            estado_lectura: 'Entregado',
+        });
+
+        await this.mensajeRepo.upsert(message, ['id_mensaje']);
+        
+        prospecto.fecha_ultimo_mensaje_cliente = fecha;
+        await this.prospectoRepo.save(prospecto);
+
+        const payload = {
+            prospecto: await this.serializeConversation(prospecto),
+            mensaje: this.serializeMessage(message),
+        };
+        this.gateway.emit('whatsapp:message', payload);
+
+        await this.processTriageAndAutoReply(
+            prospecto,
+            text,
+            isNew,
+            '👋 ¡Hola! Gracias por escribirnos y por tu interés en Escuela Maradona Menotti.\n\nPara enviarte la información correspondiente, por favor respondé este mensaje indicando:\n\n⚽ Propuesta de interés:\n* Carrera de Entrenador/a de Fútbol Profesional\n* Licencia B de Preparación Física Específica en Fútbol\n* Cursos y Especializaciones\n\n📌 Nombre y Apellido:\n📌 Email:\n📌 País de residencia:\n\nCon esos datos podremos compartirte toda la información de manera personalizada. 😊'
+        );
+    }
 
     private parseLimit(value: unknown, fallback = 60, max = 200) {
         const parsed = Number(value);
@@ -761,16 +931,45 @@ export class WhatsAppService {
     }
 
     async logout() {
-        return { success: true, message: 'La sesión no requiere reseteo con Cloud API.' };
+        try {
+            console.log('Logging out from WhatsApp Web client...');
+            this.isClientReady = false;
+            this.lastQr = null;
+            await this.client.logout();
+            await this.client.destroy();
+        } catch (e) {
+            console.error('Error during client logout:', e);
+        }
+
+        // Clean up the auth folder
+        const authPath = path.resolve('./wwebjs_auth');
+        if (fs.existsSync(authPath)) {
+            try {
+                fs.rmSync(authPath, { recursive: true, force: true });
+            } catch (err) {
+                console.error('Error deleting auth folder:', err);
+            }
+        }
+
+        // Re-initialize client to generate a new QR
+        this.initializeClient();
+
+        return { success: true, message: 'Sesión de WhatsApp cerrada y archivos de autenticación eliminados.' };
     }
 
     async sendBroadcastToStudents(studentIds: string[], plantillaId: string) {
+        if (!this.isClientReady) {
+            throw new BadRequestException('El cliente de WhatsApp no está conectado. Escanea el código QR primero.');
+        }
+
         const plantilla = await this.plantillaRepo.findOneBy({ id: plantillaId });
         if (!plantilla) throw new NotFoundException('Plantilla no encontrada');
 
         const students = await this.studentRepo.findByIds(studentIds);
         let sent = 0;
         let failed = 0;
+
+        const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
         for (const student of students) {
             if (!student.telefono) {
@@ -793,29 +992,15 @@ export class WhatsAppService {
             finalBody = finalBody.replace(/\[Curso\]/gi, student.carrera_licencia || 'el curso');
 
             try {
-                const response = await fetch(`https://graph.facebook.com/v19.0/${process.env.META_PHONE_NUMBER_ID}/messages`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        messaging_product: 'whatsapp',
-                        recipient_type: 'individual',
-                        to: cleanPhone,
-                        type: 'text',
-                        text: {
-                            body: finalBody
-                        }
-                    })
-                });
+                const jid = `${cleanPhone}@c.us`;
+                await this.client.sendMessage(jid, finalBody);
+                sent++;
 
-                if (!response.ok) {
-                    failed++;
-                } else {
-                    sent++;
-                }
+                // Anti-spam delay: Wait between 4 and 8 seconds randomly
+                const randomDelay = Math.floor(Math.random() * (8000 - 4000 + 1)) + 4000;
+                await delay(randomDelay);
             } catch (e) {
+                console.error(`Failed to send broadcast to ${student.telefono}:`, e);
                 failed++;
             }
         }
@@ -824,7 +1009,7 @@ export class WhatsAppService {
     }
 
     getStatus() {
-        return { isReady: true, type: 'cloud_api' };
+        return { isReady: this.isClientReady, type: 'qr', qr: this.lastQr };
     }
 
     async markRead(prospectoId: string) {
@@ -977,45 +1162,20 @@ export class WhatsAppService {
         }
 
         // WhatsApp sending logic
-        if (!prospecto.telefono) throw new BadRequestException('El prospecto no tiene telefono válido');
-
-        const phoneId = process.env.META_PHONE_NUMBER_ID;
-        const token = process.env.META_SYSTEM_USER_TOKEN;
-
-        if (!phoneId || !token) {
-            throw new BadRequestException('Faltan credenciales de Meta en el archivo .env (META_PHONE_NUMBER_ID o META_SYSTEM_USER_TOKEN)');
+        if (!this.isClientReady) {
+            throw new BadRequestException('El cliente de WhatsApp no está conectado. Escanea el código QR primero.');
         }
 
+        const jid = prospecto.whatsapp_id || `${prospecto.telefono}@c.us`;
         let msgId = `local-${Date.now()}`;
+
         try {
-            const url = `https://graph.facebook.com/v19.0/${phoneId}/messages`;
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    messaging_product: 'whatsapp',
-                    recipient_type: 'individual',
-                    to: prospecto.telefono,
-                    type: 'text',
-                    text: { preview_url: false, body: cuerpo }
-                })
-            });
-
-            const result = await response.json();
-
-            if (!response.ok) {
-                console.error('Meta API Error:', result);
-                throw new Error(result.error?.message || 'Error desconocido de Meta');
-            }
-
-            if (result.messages && result.messages[0]) {
-                msgId = result.messages[0].id;
+            const sentMsg = await this.client.sendMessage(jid, cuerpo);
+            if (sentMsg && sentMsg.id && sentMsg.id.id) {
+                msgId = sentMsg.id.id;
             }
         } catch (err: any) {
-            throw new BadRequestException({ error: 'Error al enviar por Meta Cloud API', details: err.message || err });
+            throw new BadRequestException({ error: 'Error al enviar por WhatsApp Web', details: err.message || err });
         }
 
         const message = this.mensajeRepo.create({
