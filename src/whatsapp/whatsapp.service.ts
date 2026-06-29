@@ -518,7 +518,7 @@ export class WhatsAppService implements OnModuleInit {
                   AND um.direccion = 'entrante'
                   AND (p.whatsapp_ultimo_leido_at IS NULL OR um.fecha_envio > p.whatsapp_ultimo_leido_at)
             ) u ON true
-            WHERE (p.origen IN ('WhatsApp', 'Facebook', 'Instagram') OR m.id_mensaje IS NOT NULL)
+            WHERE (p.origen IN ('WhatsApp', 'Facebook', 'Instagram') OR m.id_mensaje IS NOT NULL OR (p.telefono IS NOT NULL AND p.telefono != ''))
             ORDER BY (COALESCE(u.no_leidos, 0) > 0) DESC, COALESCE(m.fecha_envio, p.fecha_ingreso) DESC NULLS LAST, p.fecha_ingreso DESC
             LIMIT $1 OFFSET $2
         `, [limit + 1, offset]);
@@ -816,23 +816,75 @@ export class WhatsAppService implements OnModuleInit {
                     const senderId = msgEvent.sender?.id;
                     if (!senderId) continue;
 
-                    // Skip echoes (messages sent by the page itself)
-                    if (senderId === recipientPageId) continue;
-
                     const incomingMessage = msgEvent.message || {};
                     const isStoryMention = incomingMessage.attachments && incomingMessage.attachments[0]?.type === 'story_mention';
                     const isReaction = msgEvent.reaction || isStoryMention;
 
                     if (isReaction) {
-                        // El usuario solicitó expresamente que no se marquen los mensajes como leídos en Facebook/Instagram.
-                        // await this.markAsReadMeta(senderId, recipientPageId);
-                        continue; // No procesamos como mensaje entrante de texto
+                        continue;
                     }
 
                     if (!incomingMessage.mid) continue;
 
-                    // Skip echoes indicated by flag
-                    if (incomingMessage.is_echo) continue;
+                    const platform = objectType === 'page' ? 'Facebook' : 'Instagram';
+
+                    // Check if it is an echo (sent by our page/colleague)
+                    const isEcho = incomingMessage.is_echo || senderId === recipientPageId;
+                    if (isEcho) {
+                        const prospectSenderId = msgEvent.recipient?.id;
+                        if (!prospectSenderId) continue;
+
+                        const whatsapp_id = `${platform.toLowerCase()}:${prospectSenderId}:${recipientPageId}`;
+                        const prospecto = await this.prospectoRepo.findOne({ where: { whatsapp_id } });
+                        if (prospecto) {
+                            let text = incomingMessage.text || '';
+                            if (!text && incomingMessage.attachments && incomingMessage.attachments.length > 0) {
+                                const type = incomingMessage.attachments[0].type;
+                                const url = incomingMessage.attachments[0].payload?.url;
+                                text = url ? `[Adjunto ${type}](${url})` : `[Adjunto ${type}]`;
+                            } else if (!text) {
+                                text = '[Mensaje multimedia o adjunto]';
+                            }
+
+                            const fecha = this.parseTimestamp(msgEvent.timestamp);
+                            
+                            // Check if the message is already saved (to avoid duplicates if sent from our CRM)
+                            const existingMsg = await this.mensajeRepo.findOneBy({ id_mensaje: incomingMessage.mid });
+                            if (!existingMsg) {
+                                const message = this.mensajeRepo.create({
+                                    id_mensaje: incomingMessage.mid,
+                                    prospecto,
+                                    id_prospecto: prospecto.id,
+                                    direccion: 'saliente',
+                                    cuerpo_mensaje: text,
+                                    fecha_envio: fecha,
+                                    estado_lectura: 'Leido',
+                                });
+                                await this.mensajeRepo.save(message);
+
+                                // Mark conversation as read since an operator responded from Meta
+                                prospecto.whatsapp_ultimo_leido_at = fecha;
+                                
+                                // Auto change state to Primer Contacto if it was Nuevo
+                                const estadoNuevo = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Nuevo' });
+                                const estadoPrimerContacto = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Primer Contacto' });
+                                if (estadoNuevo && estadoPrimerContacto && (prospecto.id_estado === estadoNuevo.id || prospecto.estado === 'Nuevo')) {
+                                    prospecto.id_estado = estadoPrimerContacto.id;
+                                    prospecto.estado = estadoPrimerContacto.nombre;
+                                }
+
+                                prospecto.fecha_ultimo_mensaje_sistema = fecha;
+                                await this.prospectoRepo.save(prospecto);
+
+                                const payload = {
+                                    prospecto: await this.serializeConversation(prospecto),
+                                    mensaje: this.serializeMessage(message),
+                                };
+                                this.gateway.emit('whatsapp:message', payload);
+                            }
+                        }
+                        continue;
+                    }
 
                     let text = incomingMessage.text || '';
                     if (!text && incomingMessage.attachments && incomingMessage.attachments.length > 0) {
@@ -847,7 +899,6 @@ export class WhatsAppService implements OnModuleInit {
                         text = '[Mensaje multimedia o adjunto]';
                     }
                     const fecha = this.parseTimestamp(msgEvent.timestamp);
-                    const platform = objectType === 'page' ? 'Facebook' : 'Instagram';
                     const whatsapp_id = `${platform.toLowerCase()}:${senderId}:${recipientPageId}`;
                     const isStoryReply = incomingMessage.referral?.source_type === 'STORY' || msgEvent.referral?.source_type === 'STORY';
                     
