@@ -41,6 +41,26 @@ export class WhatsAppService implements OnModuleInit {
     private client!: Client;
     private isClientReady = false;
     private lastQr: string | null = null;
+    private sendQueue: Array<{ jid: string; cuerpo: string; resolve: (val: any) => void; reject: (err: any) => void }> = [];
+    private isProcessingQueue = false;
+    private lastAssignedOperatorIndex = 0;
+
+    private async getNextOperator(): Promise<string | null> {
+        try {
+            const operadoras = await this.prospectoRepo.manager.query(
+                "SELECT valor FROM crm_config_item WHERE tipo = 'operadora' ORDER BY orden ASC"
+            );
+            if (!operadoras || operadoras.length === 0) return null;
+            
+            const index = this.lastAssignedOperatorIndex % operadoras.length;
+            const op = operadoras[index].valor;
+            this.lastAssignedOperatorIndex = (index + 1) % operadoras.length;
+            return op;
+        } catch (e) {
+            console.error('Error fetching operators for Round Robin:', e);
+            return null;
+        }
+    }
 
     constructor(
         @InjectRepository(Prospecto, 'crm')
@@ -116,6 +136,45 @@ export class WhatsAppService implements OnModuleInit {
 
         this.client.initialize().catch((err: any) => {
             console.error('Error during WhatsApp Web client initialization:', err);
+        });
+    }
+
+    private async processSendQueue() {
+        if (this.isProcessingQueue) return;
+        this.isProcessingQueue = true;
+
+        while (this.sendQueue.length > 0) {
+            const item = this.sendQueue.shift();
+            if (!item) continue;
+
+            try {
+                if (!this.isClientReady) {
+                    throw new Error('El cliente de WhatsApp no está conectado. Reintentando más tarde...');
+                }
+
+                console.log(`Queue: sending message to ${item.jid}...`);
+                const sentMsg = await this.client.sendMessage(item.jid, item.cuerpo);
+                let msgId = `local-${Date.now()}`;
+                if (sentMsg && sentMsg.id && sentMsg.id.id) {
+                    msgId = sentMsg.id.id;
+                }
+                item.resolve(msgId);
+            } catch (err: any) {
+                console.error(`Queue: error sending message to ${item.jid}:`, err);
+                item.reject(err);
+            }
+
+            // Force 2000ms delay between sending messages
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+
+        this.isProcessingQueue = false;
+    }
+
+    private enqueueMessage(jid: string, cuerpo: string): Promise<string> {
+        return new Promise((resolve, reject) => {
+            this.sendQueue.push({ jid, cuerpo, resolve, reject });
+            this.processSendQueue();
         });
     }
 
@@ -301,6 +360,7 @@ export class WhatsAppService implements OnModuleInit {
             fue_alumno: prospecto.fue_alumno,
             fecha_ingreso: prospecto.fecha_ingreso,
             notas_generales: prospecto.notas_generales,
+            silenciar_automatizaciones: prospecto.silenciar_automatizaciones,
             ultimo_mensaje: ultimo_mensaje ? this.serializeMessage(ultimo_mensaje) : null,
         };
     }
@@ -366,6 +426,7 @@ export class WhatsAppService implements OnModuleInit {
                     console.error('Error fetching user profile from Meta:', e);
                 }
 
+                const nextOp = await this.getNextOperator();
                 const prospecto = this.prospectoRepo.create({
                     nombre,
                     apellido,
@@ -373,6 +434,7 @@ export class WhatsAppService implements OnModuleInit {
                     origen: origenEspecifico || platform,
                     estado: 'Nuevo',
                     fue_alumno: false,
+                    asignado_a: nextOp || undefined,
                 });
                 const saved = await this.prospectoRepo.save(prospecto);
                 return { prospecto: saved, isNew: true };
@@ -407,6 +469,7 @@ export class WhatsAppService implements OnModuleInit {
                 const nombre = (parts.shift() || 'WHATSAPP').toUpperCase();
                 const apellido = (parts.join(' ') || 'SIN APELLIDO').toUpperCase();
 
+                const nextOp = await this.getNextOperator();
                 const prospecto = this.prospectoRepo.create({
                     nombre,
                     apellido,
@@ -415,6 +478,7 @@ export class WhatsAppService implements OnModuleInit {
                     origen: 'WhatsApp',
                     estado: 'Nuevo',
                     fue_alumno: false,
+                    asignado_a: nextOp || undefined,
                 });
                 const saved = await this.prospectoRepo.save(prospecto);
                 return { prospecto: saved, isNew: true };
@@ -969,8 +1033,6 @@ export class WhatsAppService implements OnModuleInit {
         let sent = 0;
         let failed = 0;
 
-        const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
         for (const student of students) {
             if (!student.telefono) {
                 failed++;
@@ -993,12 +1055,8 @@ export class WhatsAppService implements OnModuleInit {
 
             try {
                 const jid = `${cleanPhone}@c.us`;
-                await this.client.sendMessage(jid, finalBody);
+                await this.enqueueMessage(jid, finalBody);
                 sent++;
-
-                // Anti-spam delay: Wait between 4 and 8 seconds randomly
-                const randomDelay = Math.floor(Math.random() * (8000 - 4000 + 1)) + 4000;
-                await delay(randomDelay);
             } catch (e) {
                 console.error(`Failed to send broadcast to ${student.telefono}:`, e);
                 failed++;
@@ -1170,10 +1228,7 @@ export class WhatsAppService implements OnModuleInit {
         let msgId = `local-${Date.now()}`;
 
         try {
-            const sentMsg = await this.client.sendMessage(jid, cuerpo);
-            if (sentMsg && sentMsg.id && sentMsg.id.id) {
-                msgId = sentMsg.id.id;
-            }
+            msgId = await this.enqueueMessage(jid, cuerpo);
         } catch (err: any) {
             throw new BadRequestException({ error: 'Error al enviar por WhatsApp Web', details: err.message || err });
         }

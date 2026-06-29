@@ -66,8 +66,10 @@ export class Prospecto {
     @Column({ type: 'varchar', nullable: true })
     ai_curso_mencionado?: string | null;
 
-    @Column({ default: false })
     ai_es_comprobante!: boolean;
+
+    @Column({ default: false })
+    silenciar_automatizaciones!: boolean;
 
     @CreateDateColumn({ type: 'timestamptz' })
     fecha_ingreso!: Date;

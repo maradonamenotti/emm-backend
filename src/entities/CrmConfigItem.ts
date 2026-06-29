@@ -22,4 +22,7 @@ export class CrmConfigItem {
 
     @Column({ default: false })
     es_perdido!: boolean;
+
+    @Column({ type: 'float', nullable: true, default: 0 })
+    valor_estimado?: number;
 }

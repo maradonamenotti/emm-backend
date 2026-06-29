@@ -120,6 +120,11 @@ export class CrmController {
         return this.crmService.remove(id);
     }
 
+    @Post('prospectos/:id/merge')
+    async merge(@Param('id') id: string, @Body() body: { targetId: string }) {
+        return this.crmService.mergeProspectos(id, body.targetId);
+    }
+
     // ─── HISTORIAL ─────────────────────────────────────────────────────
     @Post('prospectos/:id/seguimiento')
     async addSeguimiento(@Param('id') id: string, @Body() body: any) {
@@ -129,6 +134,11 @@ export class CrmController {
     @Delete('prospectos/:id/seguimiento/:sid')
     async removeSeguimiento(@Param('sid') sid: string) {
         return this.crmService.removeSeguimiento(sid);
+    }
+
+    @Patch('seguimiento/:id/snooze')
+    async snoozeSeguimiento(@Param('id') id: string, @Body() body: { dias: number }) {
+        return this.crmService.snoozeSeguimiento(id, body.dias);
     }
 
     // ─── PLANTILLAS ────────────────────────────────────────────────────

@@ -41,6 +41,21 @@ export class CrmService {
         private readonly estadoEmbudoRepo: Repository<EstadoEmbudo>,
     ) {}
 
+    private lastAssignedOperatorIndex = 0;
+
+    private async getNextOperator(): Promise<string | null> {
+        const operadoras = await this.configRepo.find({
+            where: { tipo: 'operadora' },
+            order: { orden: 'ASC' }
+        });
+        if (operadoras.length === 0) return null;
+        
+        const index = this.lastAssignedOperatorIndex % operadoras.length;
+        const op = operadoras[index].valor;
+        this.lastAssignedOperatorIndex = (index + 1) % operadoras.length;
+        return op;
+    }
+
     async onModuleInit() {
         await this.seedEstados();
         await this.seedCursos();
@@ -252,7 +267,12 @@ export class CrmService {
             asignado_a: data.asignado_a,
             etiquetas: this.normalizeTags(data.etiquetas),
             notas_generales: data.notas_generales,
+            silenciar_automatizaciones: data.silenciar_automatizaciones ?? false,
         });
+        if (!p.asignado_a) {
+            const nextOp = await this.getNextOperator();
+            if (nextOp) p.asignado_a = nextOp;
+        }
         return this.prospectoRepo.save(p);
     }
 
@@ -290,6 +310,54 @@ export class CrmService {
     async remove(id: string) {
         await this.prospectoRepo.delete({ id });
         return { success: true };
+    }
+
+    async mergeProspectos(sourceId: string, targetId: string) {
+        if (sourceId === targetId) throw new BadRequestException('No se puede fusionar un prospecto consigo mismo');
+
+        const source = await this.prospectoRepo.findOneBy({ id: sourceId });
+        const target = await this.prospectoRepo.findOneBy({ id: targetId });
+
+        if (!source || !target) {
+            throw new NotFoundException('Prospecto origen o destino no encontrado');
+        }
+
+        // 1. Mover mensajes de WhatsApp
+        await this.prospectoRepo.manager.query(
+            'UPDATE mensajes_whatsapp SET id_prospecto = $1 WHERE id_prospecto = $2',
+            [targetId, sourceId]
+        );
+
+        // 2. Mover historial de seguimiento
+        await this.historialRepo.update({ prospecto_id: sourceId }, { prospecto_id: targetId });
+
+        // 3. Combinar notas generales
+        const notasSource = (source.notas_generales || '').trim();
+        const notasTarget = (target.notas_generales || '').trim();
+        if (notasSource) {
+            target.notas_generales = notasTarget 
+                ? `${notasTarget}\n\n[Fusionado de ${source.nombre} ${source.apellido}]:\n${notasSource}` 
+                : notasSource;
+        }
+
+        // 4. Combinar etiquetas
+        const etiquetasSource = source.etiquetas || [];
+        const etiquetasTarget = target.etiquetas || [];
+        target.etiquetas = this.normalizeTags([...etiquetasTarget, ...etiquetasSource]);
+
+        // 5. Preservar datos de contacto si el destino no los tiene
+        if (!target.telefono && source.telefono) target.telefono = source.telefono;
+        if (!target.email && source.email) target.email = source.email;
+        if (!target.pais && source.pais) target.pais = source.pais;
+        if (!target.curso_interes && source.curso_interes) target.curso_interes = source.curso_interes;
+
+        // Guardar destino
+        await this.prospectoRepo.save(target);
+
+        // 6. Eliminar origen
+        await this.prospectoRepo.delete({ id: sourceId });
+
+        return { success: true, targetId };
     }
 
     async limpiarFantasmas() {
@@ -359,6 +427,9 @@ export class CrmService {
                 p.estado = estadoInicial.nombre;
             }
 
+            const nextOp = await this.getNextOperator();
+            if (nextOp) p.asignado_a = nextOp;
+
             p.fecha_ingreso = new Date();
             
             await this.prospectoRepo.save(p);
@@ -381,9 +452,20 @@ export class CrmService {
         return { success: true };
     }
 
+    async snoozeSeguimiento(id: string, dias: number) {
+        const h = await this.historialRepo.findOneBy({ id });
+        if (!h) throw new NotFoundException('Seguimiento no encontrado');
+        
+        const date = new Date();
+        date.setDate(date.getDate() + dias);
+        h.fecha_proximo_aviso = date.toISOString().split('T')[0];
+        
+        return this.historialRepo.save(h);
+    }
+
     // ─── KPI STATS ─────────────────────────────────────────────────────
     async getStats() {
-        const [prospectos, estados, origenes, alertas] = await Promise.all([
+        const [prospectos, estados, origenes, alertas, cursos] = await Promise.all([
             this.prospectoRepo.find(),
             this.estadoEmbudoRepo.find({ order: { orden: 'ASC' } }),
             this.configRepo.find({ where: { tipo: 'origen' }, order: { orden: 'ASC' } }),
@@ -395,6 +477,7 @@ export class CrmService {
                 .andWhere('(ee.es_ganado = false AND ee.es_perdido = false)')
                 .orderBy('h.fecha_proximo_aviso', 'ASC')
                 .getMany(),
+            this.configRepo.find({ where: { tipo: 'curso' } }),
         ]);
 
         const total = prospectos.length;
@@ -405,6 +488,26 @@ export class CrmService {
         const descartados = prospectos.filter(p => p.id_estado && perdidosIds.includes(p.id_estado)).length;
         const activos = total - descartados;
         const tasaConversion = activos > 0 ? Math.round((inscriptos / activos) * 100) : 0;
+
+        // Map course name -> value
+        const courseValues = new Map<string, number>();
+        for (const c of cursos) {
+            courseValues.set(c.valor.toUpperCase().trim(), c.valor_estimado || 0);
+        }
+
+        let ingresosGanados = 0;
+        let ingresosPerdidos = 0;
+
+        for (const p of prospectos) {
+            if (!p.id_estado) continue;
+            const cursoKey = (p.curso_interes || '').toUpperCase().trim();
+            const val = courseValues.get(cursoKey) || 0;
+            if (ganadosIds.includes(p.id_estado)) {
+                ingresosGanados += val;
+            } else if (perdidosIds.includes(p.id_estado)) {
+                ingresosPerdidos += val;
+            }
+        }
 
         const porEstado = estados.map(e => ({
             id: e.id,
@@ -446,6 +549,8 @@ export class CrmService {
             descartados,
             activos,
             tasaConversion,
+            ingresosGanados,
+            ingresosPerdidos,
             porEstado,
             porOrigen,
             motivosPerdida,

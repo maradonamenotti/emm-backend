@@ -141,6 +141,7 @@ export class CrmCronService {
             const pendientes = await this.prospectoRepo
                 .createQueryBuilder('p')
                 .where('p.id_estado = :estadoId', { estadoId: estado.id })
+                .andWhere('p.silenciar_automatizaciones = false')
                 .andWhere('(p.fecha_ultimo_mensaje_cliente IS NULL OR p.fecha_ultimo_mensaje_cliente <= :limite)', { limite })
                 .andWhere('(p.fecha_ultimo_mensaje_sistema IS NULL OR p.fecha_ultimo_mensaje_sistema <= :limite)', { limite })
                 .getMany();
