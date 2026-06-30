@@ -689,44 +689,8 @@ export class WhatsAppService implements OnModuleInit {
             }
         }
 
-        // Si es Facebook o Instagram, no enviamos respuestas automáticas por el momento (hasta que Meta valide la App)
-        const channel = (prospecto.whatsapp_id && prospecto.whatsapp_id.startsWith('facebook:'))
-            ? 'Facebook'
-            : (prospecto.whatsapp_id && prospecto.whatsapp_id.startsWith('instagram:'))
-            ? 'Instagram'
-            : 'WhatsApp';
-
-        if (channel === 'Facebook' || channel === 'Instagram') {
-            return;
-        }
-
-        let autoReplied = false;
-        if (triageResult && !isSpam) {
-            const query = this.plantillaRepo.createQueryBuilder('p')
-                .where('p.activa = true')
-                .andWhere('p.estado_sugerido = :estado', { estado: triageResult.estado_sugerido });
-            
-            if (triageResult.curso_mencionado) {
-                query.andWhere('(p.curso ILIKE :curso OR p.curso IS NULL)', { curso: `%${triageResult.curso_mencionado}%` });
-                query.orderBy('p.curso', 'DESC');
-            } else {
-                query.andWhere('p.curso IS NULL');
-            }
-            
-            const plantilla = await query.getOne();
-            
-            if (plantilla && plantilla.texto) {
-                await this.send({ id_prospecto: prospecto.id, cuerpo_mensaje: plantilla.texto });
-                autoReplied = true;
-            }
-        }
-
-        if (!autoReplied && isNew && defaultWelcomeMessage) {
-            await this.send({
-                id_prospecto: prospecto.id,
-                cuerpo_mensaje: defaultWelcomeMessage
-            });
-        }
+        // Desactivado completamente a petición del usuario
+        return;
     }
 
     async processWebhook(body: any) {

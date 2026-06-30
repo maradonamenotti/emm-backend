@@ -648,4 +648,81 @@ export class CrmService {
         await this.plantillaRepo.delete({ id });
         return { success: true };
     }
+
+    async importarQuinttos(fileBuffer: Buffer) {
+        if (!fileBuffer) throw new BadRequestException('No se recibió el archivo Excel');
+        
+        const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        
+        const rawData = XLSX.utils.sheet_to_json(sheet) as any[];
+        if (rawData.length === 0) throw new BadRequestException('El archivo Excel está vacío');
+
+        const estadoInscripto = await this.estadoEmbudoRepo.findOneBy({ nombre: 'Inscripto' }) 
+            || await this.estadoEmbudoRepo.findOne({ where: { es_ganado: true } });
+
+        if (!estadoInscripto) {
+            throw new BadRequestException('No se encontró el estado de embudo "Inscripto"');
+        }
+
+        let totalRows = 0;
+        let matchedCount = 0;
+
+        const prospectos = await this.prospectoRepo.find();
+
+        for (const row of rawData) {
+            const normalizedRow: any = {};
+            for (const key in row) {
+                normalizedRow[key.toLowerCase().trim()] = row[key];
+            }
+
+            const email = String(normalizedRow['email'] || normalizedRow['correo'] || normalizedRow['mail'] || '').trim().toLowerCase();
+            const phoneRaw = String(normalizedRow['whatsapp_number'] || normalizedRow['whatsapp'] || normalizedRow['telefono'] || normalizedRow['celular'] || '').trim();
+            const phoneNormalized = phoneRaw.replace(/[^\d]/g, '');
+            const nombreCompleto = String(normalizedRow['nombre completo'] || normalizedRow['nombre'] || '').trim().toUpperCase();
+
+            if (!email && !phoneNormalized && !nombreCompleto) continue;
+            totalRows++;
+
+            let matchedProspecto = null;
+
+            if (email) {
+                matchedProspecto = prospectos.find(p => p.email && p.email.toLowerCase() === email);
+            }
+
+            if (!matchedProspecto && phoneNormalized) {
+                const phoneSuffix = phoneNormalized.slice(-10);
+                if (phoneSuffix.length >= 8) {
+                    matchedProspecto = prospectos.find(p => {
+                        if (!p.telefono) return false;
+                        const pPhoneDigits = p.telefono.replace(/[^\d]/g, '');
+                        return pPhoneDigits.endsWith(phoneSuffix);
+                    });
+                }
+            }
+
+            if (!matchedProspecto && nombreCompleto) {
+                matchedProspecto = prospectos.find(p => {
+                    const pFull = `${p.nombre || ''} ${p.apellido || ''}`.trim().toUpperCase();
+                    return pFull === nombreCompleto || pFull.replace(/\s+/g, '') === nombreCompleto.replace(/\s+/g, '');
+                });
+            }
+
+            if (matchedProspecto) {
+                matchedProspecto.id_estado = estadoInscripto.id;
+                matchedProspecto.estado = estadoInscripto.nombre;
+                matchedProspecto.fue_alumno = true;
+                await this.prospectoRepo.save(matchedProspecto);
+                matchedCount++;
+            }
+        }
+
+        return {
+            success: true,
+            totalRows,
+            matchedCount,
+            message: `Se analizaron ${totalRows} filas. Se encontraron y matchearon ${matchedCount} prospectos, marcándolos como "Inscripto" y habilitando su insignia de alumno.`,
+        };
+    }
 }

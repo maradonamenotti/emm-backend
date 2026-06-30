@@ -100,6 +100,12 @@ export class CrmController {
         return this.crmService.importarExcel(file.buffer, curso);
     }
 
+    @Post('prospectos/importar-quinttos')
+    @UseInterceptors(FileInterceptor('file'))
+    async importarQuinttos(@UploadedFile() file: any) {
+        return this.crmService.importarQuinttos(file.buffer);
+    }
+
     @Get('prospectos/:id')
     async findOne(@Param('id') id: string) {
         return this.crmService.findOne(id);

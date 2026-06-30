@@ -120,7 +120,8 @@ export class CrmCronService {
      */
     @Cron(CronExpression.EVERY_HOUR)
     async handleSeguimientoAutomatico() {
-        this.logger.log('Verificando seguimientos automáticos dinámicos...');
+        this.logger.log('Seguimiento automático desactivado temporalmente a petición del usuario.');
+        return;
 
         // Solo enviar recordatorios automáticos en horario comercial (9 a 20 hs) para no parecer un robot de madrugada
         const currentHour = new Date().getHours();
@@ -151,8 +152,10 @@ export class CrmCronService {
             // Obtener plantilla si existe
             let plantillaTexto = `¡Hola {{nombre}}! 👋 Solo quería saber si pudiste revisar la información que te enviamos. ¿Tienes alguna duda en la que pueda ayudarte?`;
             if (estado.id_plantilla_recordatorio) {
-                const p = await this.plantillaRepo.findOneBy({ id: estado.id_plantilla_recordatorio });
-                if (p) plantillaTexto = p.texto;
+                const plantillaObj = await this.plantillaRepo.findOneBy({ id: estado.id_plantilla_recordatorio }) as any;
+                if (plantillaObj && plantillaObj.texto) {
+                    plantillaTexto = plantillaObj.texto;
+                }
             }
 
             for (const p of pendientes) {
