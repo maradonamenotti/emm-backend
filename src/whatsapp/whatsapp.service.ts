@@ -187,7 +187,36 @@ export class WhatsAppService implements OnModuleInit {
         const fecha = new Date(msg.timestamp * 1000);
         let text = msg.body || '';
         if (msg.hasMedia) {
-            text = `[Adjunto o Multimedia]`;
+            try {
+                const media = await msg.downloadMedia();
+                if (media && media.data) {
+                    const buffer = Buffer.from(media.data, 'base64');
+                    const maxSizeBytes = 15 * 1024 * 1024; // 15 MB
+                    if (buffer.length <= maxSizeBytes) {
+                        const ext = media.mimetype.split('/')[1]?.split(';')[0] || 'bin';
+                        const uniqueName = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+                        const uploadsDir = path.resolve('./uploads');
+                        if (!fs.existsSync(uploadsDir)) {
+                            fs.mkdirSync(uploadsDir, { recursive: true });
+                        }
+                        const filePath = path.join(uploadsDir, uniqueName);
+                        fs.writeFileSync(filePath, buffer);
+                        
+                        let type = 'document';
+                        if (media.mimetype.startsWith('image/')) type = 'image';
+                        else if (media.mimetype.startsWith('video/')) type = 'video';
+                        else if (media.mimetype.startsWith('audio/')) type = 'audio';
+                        
+                        const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
+                        text = `[Adjunto ${type}](${baseUrl}/api/whatsapp/media/${uniqueName})`;
+                    } else {
+                        text = `[Archivo omitido: supera el límite de 15 MB]`;
+                    }
+                }
+            } catch (e) {
+                console.error('Error downloading media from outgoing message:', e);
+                text = `[Error al descargar multimedia]`;
+            }
         }
 
         // Avoid duplication if the message is already saved (e.g. sent from our CRM)
@@ -233,7 +262,36 @@ export class WhatsAppService implements OnModuleInit {
         let text = msg.body || '';
 
         if (msg.hasMedia) {
-            text = `[Mensaje multimedia o adjunto]`;
+            try {
+                const media = await msg.downloadMedia();
+                if (media && media.data) {
+                    const buffer = Buffer.from(media.data, 'base64');
+                    const maxSizeBytes = 15 * 1024 * 1024; // 15 MB
+                    if (buffer.length <= maxSizeBytes) {
+                        const ext = media.mimetype.split('/')[1]?.split(';')[0] || 'bin';
+                        const uniqueName = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+                        const uploadsDir = path.resolve('./uploads');
+                        if (!fs.existsSync(uploadsDir)) {
+                            fs.mkdirSync(uploadsDir, { recursive: true });
+                        }
+                        const filePath = path.join(uploadsDir, uniqueName);
+                        fs.writeFileSync(filePath, buffer);
+                        
+                        let type = 'document';
+                        if (media.mimetype.startsWith('image/')) type = 'image';
+                        else if (media.mimetype.startsWith('video/')) type = 'video';
+                        else if (media.mimetype.startsWith('audio/')) type = 'audio';
+                        
+                        const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
+                        text = `[Adjunto ${type}](${baseUrl}/api/whatsapp/media/${uniqueName})`;
+                    } else {
+                        text = `[Archivo omitido: supera el límite de 15 MB]`;
+                    }
+                }
+            } catch (e) {
+                console.error('Error downloading media from incoming message:', e);
+                text = `[Error al descargar multimedia]`;
+            }
         }
 
         const extractedName = this.extractNameFromText(text);

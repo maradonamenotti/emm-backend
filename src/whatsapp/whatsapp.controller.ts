@@ -1,6 +1,8 @@
-import { Body, Controller, Get, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Res, Param } from '@nestjs/common';
 import type { Response } from 'express';
 import { WhatsAppService } from './whatsapp.service';
+import * as path from 'path';
+import * as fs from 'fs';
 
 @Controller('api/whatsapp')
 export class WhatsAppController {
@@ -60,5 +62,14 @@ export class WhatsAppController {
     @Post('broadcast')
     async broadcast(@Body() body: { studentIds: string[], plantillaId: string }) {
         return this.whatsAppService.sendBroadcastToStudents(body.studentIds, body.plantillaId);
+    }
+
+    @Get('media/:filename')
+    getMedia(@Param('filename') filename: string, @Res() res: Response) {
+        const filePath = path.resolve('./uploads', filename);
+        if (!fs.existsSync(filePath)) {
+            return res.sendStatus(404);
+        }
+        return res.sendFile(filePath);
     }
 }
