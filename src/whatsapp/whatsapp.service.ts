@@ -212,8 +212,7 @@ export class WhatsAppService implements OnModuleInit {
                         else if (media.mimetype.startsWith('video/')) type = 'video';
                         else if (media.mimetype.startsWith('audio/')) type = 'audio';
                         
-                        const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
-                        text = `[Adjunto ${type}](${baseUrl}/api/whatsapp/media/${uniqueName})`;
+                        text = `[Adjunto ${type}](/api/whatsapp/media/${uniqueName})`;
                     } else {
                         text = `[Archivo omitido: supera el límite de 15 MB]`;
                     }
@@ -287,8 +286,7 @@ export class WhatsAppService implements OnModuleInit {
                         else if (media.mimetype.startsWith('video/')) type = 'video';
                         else if (media.mimetype.startsWith('audio/')) type = 'audio';
                         
-                        const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
-                        text = `[Adjunto ${type}](${baseUrl}/api/whatsapp/media/${uniqueName})`;
+                        text = `[Adjunto ${type}](/api/whatsapp/media/${uniqueName})`;
                     } else {
                         text = `[Archivo omitido: supera el límite de 15 MB]`;
                     }
