@@ -610,6 +610,44 @@ export class WhatsAppService implements OnModuleInit {
         const prospecto = await this.prospectoRepo.findOneBy({ id: prospectoId });
         if (!prospecto) throw new NotFoundException('Prospecto no encontrado');
 
+        const shouldResolve = options.resolveContact === 'true' || options.resolveContact === true;
+        if (shouldResolve && this.isClientReady && prospecto.telefono && (!prospecto.whatsapp_id || !prospecto.whatsapp_id.includes(':'))) {
+            try {
+                const jid = prospecto.whatsapp_id || `${prospecto.telefono}@c.us`;
+                const chat = await this.client.getChatById(jid);
+                if (chat) {
+                    let labelNames: string[] = [];
+                    try {
+                        const labels = await chat.getLabels();
+                        if (labels && Array.isArray(labels)) {
+                            labelNames = labels.map(l => l.name).filter(Boolean);
+                        }
+                    } catch (e) {
+                        console.error('Error fetching labels from chat:', e);
+                    }
+
+                    const contact = await chat.getContact();
+                    if (contact) {
+                        const formattedName = contact.pushname || contact.name;
+                        if (formattedName && prospecto.nombre === 'WHATSAPP' && prospecto.apellido === 'SIN APELLIDO') {
+                            const parts = formattedName.trim().split(/\s+/).filter(Boolean);
+                            prospecto.nombre = (parts.shift() || 'WHATSAPP').toUpperCase();
+                            prospecto.apellido = (parts.join(' ') || 'SIN APELLIDO').toUpperCase();
+                        }
+                    }
+
+                    if (labelNames.length > 0) {
+                        const existingTags = prospecto.etiquetas || [];
+                        prospecto.etiquetas = Array.from(new Set([...existingTags, ...labelNames]));
+                    }
+                    
+                    await this.prospectoRepo.save(prospecto);
+                }
+            } catch (e) {
+                console.error('Error resolving contact / labels in messages endpoint:', e);
+            }
+        }
+
         const limit = this.parseLimit(options.limit, 60, 200);
         const before = this.parseDate(options.before);
         const where: any = { id_prospecto: prospectoId };
