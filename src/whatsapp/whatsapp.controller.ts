@@ -44,6 +44,11 @@ export class WhatsAppController {
         return this.whatsAppService.markRead(body.prospecto_id || '');
     }
 
+    @Post('unread')
+    markUnread(@Body() body: { prospecto_id?: string }) {
+        return this.whatsAppService.markUnread(body.prospecto_id || '');
+    }
+
     @Get('messages')
     messages(
         @Query('prospecto_id') prospectoId: string,

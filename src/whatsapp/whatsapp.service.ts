@@ -79,6 +79,11 @@ export class WhatsAppService implements OnModuleInit {
 
     onModuleInit() {
         this.initializeClient();
+        
+        // Sincronizar estados de lectura cada 20 segundos
+        setInterval(() => {
+            void this.syncUnreadStatuses();
+        }, 20000);
     }
 
     private initializeClient() {
@@ -1150,6 +1155,51 @@ export class WhatsAppService implements OnModuleInit {
 
         prospecto.whatsapp_ultimo_leido_at = new Date();
         await this.prospectoRepo.save(prospecto);
+
+        // Mark as read in WhatsApp Web client if connected
+        if (this.isClientReady && prospecto.telefono && (!prospecto.whatsapp_id || !prospecto.whatsapp_id.includes(':'))) {
+            try {
+                const jid = prospecto.whatsapp_id || `${prospecto.telefono}@c.us`;
+                const chat = await this.client.getChatById(jid);
+                if (chat) {
+                    await chat.sendSeen();
+                }
+            } catch (e) {
+                console.error('Error marking chat as read in WhatsApp Web client:', e);
+            }
+        } else if (prospecto.whatsapp_id && (prospecto.whatsapp_id.startsWith('facebook:') || prospecto.whatsapp_id.startsWith('instagram:'))) {
+            const parts = prospecto.whatsapp_id.split(':');
+            const senderId = parts[1];
+            const pageId = parts[2];
+            if (senderId && pageId) {
+                await this.markAsReadMeta(senderId, pageId);
+            }
+        }
+
+        return this.serializeConversation(prospecto);
+    }
+
+    async markUnread(prospectoId: string) {
+        if (!prospectoId) throw new BadRequestException('prospecto_id es requerido');
+        const prospecto = await this.prospectoRepo.findOneBy({ id: prospectoId });
+        if (!prospecto) throw new NotFoundException('Prospecto no encontrado');
+
+        prospecto.whatsapp_ultimo_leido_at = null as any;
+        await this.prospectoRepo.save(prospecto);
+
+        // Mark as unread in WhatsApp Web client if connected
+        if (this.isClientReady && prospecto.telefono && (!prospecto.whatsapp_id || !prospecto.whatsapp_id.includes(':'))) {
+            try {
+                const jid = prospecto.whatsapp_id || `${prospecto.telefono}@c.us`;
+                const chat = await this.client.getChatById(jid);
+                if (chat) {
+                    await chat.markUnread();
+                }
+            } catch (e) {
+                console.error('Error marking chat as unread in WhatsApp Web client:', e);
+            }
+        }
+
         return this.serializeConversation(prospecto);
     }
 
@@ -1331,5 +1381,86 @@ export class WhatsAppService implements OnModuleInit {
         const payload = { prospecto: await this.serializeConversation(prospecto), mensaje: this.serializeMessage(message) };
         this.gateway.emit('whatsapp:message', payload);
         return payload;
+    }
+
+    async syncUnreadStatuses() {
+        if (!this.isClientReady) return;
+        try {
+            const chats = await this.client.getChats();
+            if (chats.length === 0) return;
+
+            const jids = chats.map(c => c.id._serialized);
+            const phones = chats.map(c => this.normalizePhone(c.id.user)).filter(Boolean) as string[];
+
+            if (jids.length === 0 && phones.length === 0) return;
+
+            const qb = this.prospectoRepo.createQueryBuilder('p');
+            if (jids.length > 0) {
+                qb.where('p.whatsapp_id IN (:...jids)', { jids });
+            }
+            if (phones.length > 0) {
+                if (jids.length > 0) {
+                    qb.orWhere('p.telefono IN (:...phones)', { phones });
+                } else {
+                    qb.where('p.telefono IN (:...phones)', { phones });
+                }
+            }
+            const prospectos = await qb.getMany();
+            if (prospectos.length === 0) return;
+
+            const prospectoMap = new Map<string, Prospecto>();
+            for (const p of prospectos) {
+                if (p.whatsapp_id) prospectoMap.set(p.whatsapp_id, p);
+                if (p.telefono) prospectoMap.set(p.telefono, p);
+            }
+
+            for (const chat of chats) {
+                if (chat.isGroup) continue;
+
+                let prospecto = prospectoMap.get(chat.id._serialized);
+                if (!prospecto) {
+                    const phone = this.normalizePhone(chat.id.user);
+                    if (phone) {
+                        prospecto = prospectoMap.get(phone);
+                    }
+                }
+                if (!prospecto) continue;
+
+                const lastIncoming = await this.mensajeRepo.findOne({
+                    where: { id_prospecto: prospecto.id, direccion: 'entrante' },
+                    order: { fecha_envio: 'DESC' }
+                });
+
+                if (chat.unreadCount === 0) {
+                    const isUnreadInDb = lastIncoming && 
+                        (!prospecto.whatsapp_ultimo_leido_at || lastIncoming.fecha_envio > prospecto.whatsapp_ultimo_leido_at);
+                    
+                    if (isUnreadInDb || !prospecto.whatsapp_ultimo_leido_at) {
+                        prospecto.whatsapp_ultimo_leido_at = new Date();
+                        await this.prospectoRepo.save(prospecto);
+                        const payload = {
+                            prospecto: await this.serializeConversation(prospecto),
+                            mensaje: lastIncoming ? this.serializeMessage(lastIncoming) : null,
+                        };
+                        this.gateway.emit('whatsapp:message', payload);
+                    }
+                } else {
+                    const isReadInDb = !lastIncoming || 
+                        (prospecto.whatsapp_ultimo_leido_at && prospecto.whatsapp_ultimo_leido_at >= lastIncoming.fecha_envio);
+                    
+                    if (isReadInDb) {
+                        prospecto.whatsapp_ultimo_leido_at = null as any;
+                        await this.prospectoRepo.save(prospecto);
+                        const payload = {
+                            prospecto: await this.serializeConversation(prospecto),
+                            mensaje: lastIncoming ? this.serializeMessage(lastIncoming) : null,
+                        };
+                        this.gateway.emit('whatsapp:message', payload);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error synchronizing unread statuses:', error);
+        }
     }
 }
