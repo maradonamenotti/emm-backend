@@ -216,6 +216,8 @@ export class WhatsAppService implements OnModuleInit {
                     } else {
                         text = `[Archivo omitido: supera el límite de 15 MB]`;
                     }
+                } else {
+                    text = `[Adjunto multimedia]`;
                 }
             } catch (e) {
                 console.error('Error downloading media from outgoing message:', e);
@@ -290,6 +292,8 @@ export class WhatsAppService implements OnModuleInit {
                     } else {
                         text = `[Archivo omitido: supera el límite de 15 MB]`;
                     }
+                } else {
+                    text = `[Adjunto multimedia]`;
                 }
             } catch (e) {
                 console.error('Error downloading media from incoming message:', e);
@@ -642,6 +646,74 @@ export class WhatsAppService implements OnModuleInit {
                     }
                     
                     await this.prospectoRepo.save(prospecto);
+
+                    // Sincronizar mensajes recientes para recuperar audios/multimedia fallidos
+                    try {
+                        const wwebMessages = await chat.fetchMessages({ limit: 30 });
+                        if (wwebMessages && Array.isArray(wwebMessages)) {
+                            for (const msg of wwebMessages) {
+                                let dbMsg = await this.mensajeRepo.findOneBy({ id_mensaje: msg.id.id });
+                                const needsSync = !dbMsg || ((dbMsg.cuerpo_mensaje === '' || dbMsg.cuerpo_mensaje === '[Error al descargar multimedia]') && msg.hasMedia);
+                                if (needsSync) {
+                                    let text = msg.body || '';
+                                    if (msg.hasMedia) {
+                                        try {
+                                            const media = await msg.downloadMedia();
+                                            if (media && media.data) {
+                                                const buffer = Buffer.from(media.data, 'base64');
+                                                const maxSizeBytes = 15 * 1024 * 1024;
+                                                if (buffer.length <= maxSizeBytes) {
+                                                    const ext = media.mimetype.split('/')[1]?.split(';')[0] || 'bin';
+                                                    const uniqueName = `media_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
+                                                    const uploadsDir = path.resolve('./uploads');
+                                                    if (!fs.existsSync(uploadsDir)) {
+                                                        fs.mkdirSync(uploadsDir, { recursive: true });
+                                                    }
+                                                    const filePath = path.join(uploadsDir, uniqueName);
+                                                    fs.writeFileSync(filePath, buffer);
+                                                    
+                                                    let type = 'document';
+                                                    if (media.mimetype.startsWith('image/')) type = 'image';
+                                                    else if (media.mimetype.startsWith('video/')) type = 'video';
+                                                    else if (media.mimetype.startsWith('audio/')) type = 'audio';
+                                                    
+                                                    text = `[Adjunto ${type}](/api/whatsapp/media/${uniqueName})`;
+                                                } else {
+                                                    text = `[Archivo omitido: supera el límite de 15 MB]`;
+                                                }
+                                            } else {
+                                                text = `[Adjunto multimedia]`;
+                                            }
+                                        } catch (e) {
+                                            console.error('Error downloading media during resolveContact sync:', e);
+                                            text = dbMsg ? dbMsg.cuerpo_mensaje : `[Error al descargar multimedia]`;
+                                        }
+                                    }
+                                    if (msg.hasMedia && !text && dbMsg) {
+                                        continue;
+                                    }
+                                    if (dbMsg) {
+                                        dbMsg.cuerpo_mensaje = text;
+                                        await this.mensajeRepo.save(dbMsg);
+                                    } else {
+                                        const fecha = new Date(msg.timestamp * 1000);
+                                        dbMsg = this.mensajeRepo.create({
+                                            id_mensaje: msg.id.id,
+                                            prospecto,
+                                            id_prospecto: prospecto.id,
+                                            direccion: msg.fromMe ? 'saliente' : 'entrante',
+                                            cuerpo_mensaje: text,
+                                            fecha_envio: fecha,
+                                            estado_lectura: msg.fromMe ? 'Leido' : 'Entregado',
+                                        });
+                                        await this.mensajeRepo.save(dbMsg);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Error fetching/syncing messages from chat during resolveContact:', e);
+                    }
                 }
             } catch (e) {
                 console.error('Error resolving contact / labels in messages endpoint:', e);
